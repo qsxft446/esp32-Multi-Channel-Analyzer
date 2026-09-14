@@ -48,27 +48,3 @@ void      adc_cap_kick(void);
 
 /* Какие линии данных шевелятся. Возвращает маску менявшихся бит. */
 uint32_t  adc_cap_probe_data_lines(uint32_t *stuck_hi, uint32_t *stuck_lo);
-
-/* ---- Автоподбор режима LCD_CAM ----
- * Комбинация управляющих сигналов камерного интерфейса нигде толком
- * не описана для нашего случая (сенсора нет, кадров нет). Вместо
- * угадывания по одной гипотезе за прошивку - перебираем все варианты
- * и смотрим, при какой пошли чанки. */
-typedef struct {
-    uint8_t vh_de_mode;   /* 0: DE+VSYNC, 1: DE+HSYNC (VSYNC не нужен) */
-    uint8_t vsync_inv;
-    uint8_t hsync_inv;
-    uint8_t de_inv;
-    uint8_t vsync_src;    /* 0: пост.1, 1: пост.0, 2: импульс при старте */
-} cam_mode_t;
-
-void  adc_cap_set_mode(const cam_mode_t *m);
-void  adc_cap_get_mode(cam_mode_t *m);
-
-/* Перебор. Крутится в главной задаче, не в обработчике HTTP. */
-void  adc_cap_tune_request(void);
-bool  adc_cap_tune_busy(void);
-int   adc_cap_tune_progress(void);   /* 0..100 */
-int   adc_cap_tune_result(void);     /* -1 нет, иначе номер варианта */
-void  adc_cap_tune_step(void);       /* вызывать из главного цикла */
-int   adc_cap_tune_total(void);

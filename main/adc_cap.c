@@ -38,13 +38,27 @@ static volatile bool      s_gap;      /* был пропуск с прошлой
 static volatile uint64_t  s_chunks;      /* всего чанков от DMA */
 static volatile int       s_last_ready = -1;
 
-/* РАБОЧИЙ РЕЖИМ, найден автоподбором на железе (вариант 16).
- * Все полярности прямые, а кадровая синхронизация должна быть
- * прибита к ПОСТОЯННОМУ НУЛЮ - изначально я прибил её к единице
- * (данные, мол, всегда валидны), и это было неверно.
- * Автоподбор остаётся в прошивке на случай другой платы. */
-static cam_mode_t s_mode = { .vh_de_mode = 0, .vsync_inv = 0,
-                             .hsync_inv = 0, .de_inv = 0, .vsync_src = 1 };
+/* РЕЖИМ УПРАВЛЯЮЩИХ СИГНАЛОВ КАМЕРНОГО ИНТЕРФЕЙСА.
+ *
+ * Комбинация для нашего случая (сенсора нет, кадров нет) нигде не
+ * описана; её нашёл перебор всех 48 вариантов на железе - вариант 16:
+ * все полярности прямые, а кадровая синхронизация прибита к ПОСТОЯННОМУ
+ * НУЛЮ (изначально её прибили к единице - данные, мол, всегда валидны -
+ * и это было неверно). Перебор из прошивки убран: режим найден.
+ *
+ * Если на другой плате захват не пойдёт при живом PCLK (в консоли
+ * «PCLK ... ЕСТЬ, но чанков нет»), подбирать эти поля вручную. */
+typedef struct {
+    uint8_t vh_de_mode;   /* 0: DE+VSYNC, 1: DE+HSYNC (VSYNC не нужен) */
+    uint8_t vsync_inv;
+    uint8_t hsync_inv;
+    uint8_t de_inv;
+    uint8_t vsync_src;    /* 0: пост.1, 1: пост.0                     */
+} cam_mode_t;
+
+static const cam_mode_t s_mode = { .vh_de_mode = 0, .vsync_inv = 0,
+                                   .hsync_inv = 0, .de_inv = 0,
+                                   .vsync_src = 1 };
 
 typedef struct { int idx; } cap_msg_t;
 
@@ -278,37 +292,6 @@ esp_err_t adc_cap_init(void)
     return ESP_OK;
 }
 
-/* Голый запуск без проверок и логов - для перебора вариантов. */
-static void adc_cap_start_quiet(void)
-{
-    xQueueReset(s_queue);
-    for (int i = 0; i < CAP_N_CHUNKS; i++) {
-        s_desc[i].dw0.owner  = DMA_DESCRIPTOR_BUFFER_OWNER_DMA;
-        s_desc[i].dw0.length = 0;
-    }
-    s_gap = true;               /* поток начинается заново - см. adc_cap_start */
-
-    /* ПОСЛЕДОВАТЕЛЬНОСТЬ ПО ДОКУМЕНТАЦИИ.
-     * Раньше я делал по-своему и упускал сброс контроллера DMA,
-     * а регистры обновлял уже после запуска передачи. Правильный
-     * порядок: сброс DMA -> обновление регистров -> сброс приёмного
-     * буфера -> запуск DMA -> запуск камеры.
-     *
-     * Сигналы сброса камеры и её буфера в документации помечены
-     * как "только запись" и снимаются аппаратно сами: писать в них
-     * ноль не нужно, а чтение-модификация-запись всего регистра
-     * ради этого могла задевать соседние биты. */
-    gdma_reset(s_dma);
-    LCD_CAM.cam_ctrl.cam_update       = 1;
-    LCD_CAM.cam_ctrl1.cam_afifo_reset = 1;
-
-    gdma_start(s_dma, (intptr_t)&s_desc[0]);
-    LCD_CAM.cam_ctrl1.cam_start       = 1;
-
-    if (s_mode.vsync_src == 2) cam_vsync_pulse();
-    s_running = true;
-}
-
 esp_err_t adc_cap_start(void)
 {
     if (s_running) return ESP_OK;
@@ -329,7 +312,13 @@ esp_err_t adc_cap_start(void)
      * перезапускается при каждой смене вкладки, так что это частый путь. */
     s_gap = true;
 
-    /* Порядок по документации (см. комментарий в adc_cap_start_quiet) */
+    /* ПОСЛЕДОВАТЕЛЬНОСТЬ ПО ДОКУМЕНТАЦИИ: сброс DMA -> обновление
+     * регистров -> сброс приёмного буфера -> запуск DMA -> запуск камеры.
+     * Раньше сброс контроллера DMA упускался, а регистры обновлялись уже
+     * после запуска передачи. Сигналы сброса камеры и её буфера в
+     * документации помечены как "только запись" и снимаются аппаратно
+     * сами: писать в них ноль не нужно, а чтение-модификация-запись всего
+     * регистра ради этого могла задевать соседние биты. */
     gdma_reset(s_dma);
     LCD_CAM.cam_ctrl.cam_update       = 1;
     LCD_CAM.cam_ctrl1.cam_afifo_reset = 1;
@@ -409,8 +398,8 @@ esp_err_t adc_cap_start(void)
         ESP_LOGE(TAG, "PCLK на GPIO%d ЕСТЬ, но чанков нет - значит дело "
                       "в настройке LCD_CAM, а не в монтаже.",
                  PIN_CAM_PCLK_IN);
-        ESP_LOGE(TAG, "  Запустите автоподбор режима на /diag (кнопка "
-                      "подбора управляющих сигналов камеры).");
+        ESP_LOGE(TAG, "  Не подходит режим управляющих сигналов камеры: "
+                      "s_mode в adc_cap.c.");
         ESP_LOGE(TAG, "ЗАХВАТ НЕ ПОШЁЛ: за 150 мс не пришло ни одного чанка");
         ESP_LOGE(TAG, "  проверьте: перемычка GPIO%d->GPIO%d (CLK->PCLK),",
                  PIN_ADC_CLK_OUT, PIN_CAM_PCLK_IN);
@@ -510,98 +499,4 @@ void adc_cap_dump_regs(uint32_t *ctrl, uint32_t *ctrl1, int *pclk_lvl)
     *ctrl     = LCD_CAM.cam_ctrl.val;
     *ctrl1    = LCD_CAM.cam_ctrl1.val;
     *pclk_lvl = gpio_get_level(PIN_CAM_PCLK_IN);
-}
-
-/* ================= АВТОПОДБОР РЕЖИМА ================= */
-
-static const uint8_t TUNE_VSRC[3] = { 0, 1, 2 };
-#define TUNE_TOTAL (2 * 2 * 2 * 2 * 3)      /* 48 вариантов */
-
-static volatile bool s_tune_busy;
-static volatile int  s_tune_idx;
-static volatile int  s_tune_found = -1;
-
-static void tune_decode(int i, cam_mode_t *m)
-{
-    m->vh_de_mode = i & 1;              i >>= 1;
-    m->vsync_inv  = i & 1;              i >>= 1;
-    m->hsync_inv  = i & 1;              i >>= 1;
-    m->de_inv     = i & 1;              i >>= 1;
-    m->vsync_src  = TUNE_VSRC[i % 3];
-}
-
-void adc_cap_set_mode(const cam_mode_t *m) { s_mode = *m; }
-void adc_cap_get_mode(cam_mode_t *m)       { *m = s_mode; }
-
-void adc_cap_tune_request(void)
-{
-    s_tune_idx   = 0;
-    s_tune_found = -1;
-    s_tune_busy  = true;
-}
-bool adc_cap_tune_busy(void)     { return s_tune_busy; }
-int  adc_cap_tune_result(void)   { return s_tune_found; }
-int  adc_cap_tune_total(void)    { return TUNE_TOTAL; }
-int  adc_cap_tune_progress(void)
-{
-    return s_tune_busy ? (s_tune_idx * 100 / TUNE_TOTAL) : 100;
-}
-
-/* Один шаг перебора. Вызывается из главной задачи, чтобы не держать
- * обработчик HTTP и не ловить таймаут соединения. */
-void adc_cap_tune_step(void)
-{
-    if (!s_tune_busy) return;
-
-    if (s_tune_idx >= TUNE_TOTAL) {
-        s_tune_busy = false;
-        if (s_tune_found < 0) {
-            ESP_LOGE(TAG, "автоподбор: рабочего варианта НЕ НАЙДЕНО");
-            /* вернуть исходный режим, а не последний перебранный */
-            cam_mode_t d = { .vh_de_mode = 0, .vsync_inv = 0,
-                             .hsync_inv = 0, .de_inv = 0, .vsync_src = 1 };
-            s_mode = d;
-            LCD_CAM.cam_ctrl1.cam_vh_de_mode_en = 0;
-            LCD_CAM.cam_ctrl1.cam_de_inv        = 0;
-            LCD_CAM.cam_ctrl1.cam_hsync_inv     = 0;
-            LCD_CAM.cam_ctrl1.cam_vsync_inv     = 0;
-            LCD_CAM.cam_ctrl.cam_update = 1;
-        }
-        return;
-    }
-
-    cam_mode_t m;
-    tune_decode(s_tune_idx, &m);
-
-    adc_cap_stop();
-    s_mode = m;
-
-    /* Только поля режима, без полного сброса периферии: повторный
-     * periph_module_reset в цикле оставлял бы модуль в неясном
-     * состоянии. */
-    LCD_CAM.cam_ctrl1.cam_vh_de_mode_en = m.vh_de_mode;
-    LCD_CAM.cam_ctrl1.cam_de_inv        = m.de_inv;
-    LCD_CAM.cam_ctrl1.cam_hsync_inv     = m.hsync_inv;
-    LCD_CAM.cam_ctrl1.cam_vsync_inv     = m.vsync_inv;
-    esp_rom_gpio_connect_in_signal(
-        m.vsync_src == 1 ? GPIO_MATRIX_CONST_ZERO : GPIO_MATRIX_CONST_ONE,
-        CAM_V_SYNC_IDX, false);
-    LCD_CAM.cam_ctrl.cam_update = 1;
-
-    uint64_t before = s_chunks;
-    adc_cap_start_quiet();
-    vTaskDelay(pdMS_TO_TICKS(120));
-
-    if (s_chunks > before) {
-        s_tune_found = s_tune_idx;
-        s_tune_busy  = false;
-        ESP_LOGI(TAG, "автоподбор НАШЁЛ вариант %d: vh_de=%d vs_inv=%d "
-                      "hs_inv=%d de_inv=%d vsrc=%d (чанков %llu)",
-                 s_tune_idx, m.vh_de_mode, m.vsync_inv, m.hsync_inv,
-                 m.de_inv, m.vsync_src,
-                 (unsigned long long)(s_chunks - before));
-        return;
-    }
-    adc_cap_stop();
-    s_tune_idx++;
 }

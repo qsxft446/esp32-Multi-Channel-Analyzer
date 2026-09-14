@@ -1274,15 +1274,7 @@ SUB_HEAD("Диагностика") SUB_NAV(N_DIAG_ON, N_WIFI, N_HELP)
 "побитовая статистика (разбор 1 чанка/с)</label>"
 "<div id=out></div>"
 "<button class='btn sm' onclick=probe() style=margin-top:10px>Проверить линии данных</button>"
-"<div id=pr style=margin-top:8px;font-size:12.5px></div></section>"
-"<section class='panel pad'>"
-"<h4 style=margin-top:0>Автоподбор режима LCD_CAM</h4>"
-"<p class=n>Комбинация управляющих сигналов "
-"камерного интерфейса для нашего случая (сенсора нет, кадров нет) нигде "
-"не описана. Перебор пробует все варианты и находит тот, при котором "
-"пошли данные. Занимает несколько секунд.</p>"
-"<button class='btn sm green' onclick=tune()>Подобрать режим</button>"
-"<div id=tn style=margin-top:8px;font-size:12.5px></div></section></div>"
+"<div id=pr style=margin-top:8px;font-size:12.5px></div></section></div>"
 "<script>"
 "function tog(){fetch('/diag/set?en='+(document.getElementById('en').checked?1:0))}"
 "function f(v,c){return '<span class='+c+'>'+v+'</span>'}"
@@ -1373,19 +1365,6 @@ SUB_HEAD("Диагностика") SUB_NAV(N_DIAG_ON, N_WIFI, N_HELP)
 "h+=live?f('Активных линий: '+live+' — АЦП преобразует','ok'):"
 "f('НИ ОДНА линия не шевелится — АЦП не преобразует. Смотрите питание платы и приходит ли на неё такт.','bad');"
 "document.getElementById('pr').innerHTML=h})}"
-"function tune(){fetch('/cam/tune').then(function(){"
-"document.getElementById('tn').textContent='перебираю...';tpoll()})}"
-"function tpoll(){fetch('/cam/status').then(r=>r.json()).then(function(j){"
-"var e=document.getElementById('tn');"
-"if(j.busy){e.textContent='перебираю... '+j.prog+'% (из '+j.total+' вариантов)';"
-"setTimeout(tpoll,400);return}"
-"if(j.found>=0){e.innerHTML=f('НАЙДЕН рабочий вариант №'+j.found,'ok')+"
-"'<br>vh_de_mode='+j.vh+' vsync_inv='+j.vs+' hsync_inv='+j.hs+"
-"' de_inv='+j.de+' vsync_src='+j.src+'<br>чанков: '+j.chunks+"
-"'<br>Режим применён. Нажмите Старт на главной.'}"
-"else e.innerHTML=f('рабочего варианта не найдено','bad')+"
-"'<br>Значит дело не в управляющих сигналах: проверьте монтаж - перемычку '+"
-"'GPIO5-GPIO18, питание платы АЦП и линии данных (проверка линий на этой странице).'})}"
 "setInterval(upd,1000);upd();"
 "</script></body></html>";
 
@@ -1487,34 +1466,6 @@ static esp_err_t h_diag_probe(httpd_req_t *r)
     return httpd_resp_send(r, buf, n);
 }
 
-/* ---- автоподбор режима LCD_CAM ---- */
-static esp_err_t h_cam_tune(httpd_req_t *r)
-{
-    adc_cap_tune_request();
-    return httpd_resp_sendstr(r, "ok");
-}
-
-static esp_err_t h_cam_tune_status(httpd_req_t *r)
-{
-    cam_mode_t m;
-    adc_cap_get_mode(&m);
-    char buf[400];
-    int n = snprintf(buf, sizeof(buf),
-        "{\"busy\":%s,\"prog\":%d,\"found\":%d,\"total\":%d,"
-        "\"vh\":%d,\"vs\":%d,\"hs\":%d,\"de\":%d,\"src\":%d,"
-        "\"chunks\":%llu}",
-        adc_cap_tune_busy() ? "true" : "false",
-        adc_cap_tune_progress(), adc_cap_tune_result(),
-        adc_cap_tune_total(),
-        m.vh_de_mode, m.vsync_inv, m.hsync_inv, m.de_inv, m.vsync_src,
-        (unsigned long long)adc_cap_chunks_total());
-    httpd_resp_set_type(r, "application/json");
-    /* snprintf возвращает длину, которая ПОТРЕБОВАЛАСЬ БЫ. При нехватке
-     * места это больше размера буфера, и отправка читала бы за его
-     * границей. Ограничиваем. */
-    if (n > (int)sizeof(buf) - 1) n = (int)sizeof(buf) - 1;
-    return httpd_resp_send(r, buf, n);
-}
 
 static esp_err_t h_diag_set(httpd_req_t *r)
 {
@@ -2032,8 +1983,6 @@ esp_err_t mca_web_start(void)
         { "/diag/data",    HTTP_GET, h_diag_data,   NULL },
         { "/diag/set",     HTTP_GET, h_diag_set,    NULL },
         { "/diag/probe",   HTTP_GET, h_diag_probe,  NULL },
-        { "/cam/tune",     HTTP_GET, h_cam_tune,        NULL },
-        { "/cam/status",   HTTP_GET, h_cam_tune_status, NULL },
         { "/help",         HTTP_GET, h_help,        NULL },
         { "/export.xml",   HTTP_GET, h_export,      (void *)"xml" },
         { "/export.csv",   HTTP_GET, h_export,      (void *)"csv" },

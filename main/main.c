@@ -125,13 +125,6 @@ void app_main(void)
     uint32_t tick = 0;
 
     while (1) {
-        /* Перебор режимов LCD_CAM крутится здесь, а не в обработчике
-         * HTTP: он занимает секунды, соединение бы отвалилось. */
-        if (adc_cap_tune_busy()) {
-            adc_cap_tune_step();
-            continue;                /* пока подбираем - остальное ждёт */
-        }
-
         if (mca_cmd_clear) { mca_cmd_clear = false; mca_dsp_reset_spectrum(); }
 
         if (mca_cmd_freq_idx >= 0) {
