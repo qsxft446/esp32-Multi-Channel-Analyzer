@@ -623,7 +623,7 @@ static const char PAGE[] =
 "var SCM=1;"
 "function showCtl(){var m=document.getElementById('md').value,sp=(m=='0'||m=='2'),sc=!sp;"
 "cv.style.cursor=sc?'crosshair':'';cv.style.touchAction=sc?'none':'';"
-"var v={g_sp:sp,g_sc:sc,g_zm:sc,g_leg:sc,g_rul:sc,g_big:sp,bclr:sp,"
+"var v={g_sp:sp,g_sc:sc,g_zm:sc,g_leg:sc,g_rul:sc,g_big:sp,bclr:sp,st:sp,"
 /* настройки - только на вкладке осциллографа: подбираются по импульсам */
 "g_shs:sc,g_set:sc&&document.getElementById('shset').checked};"
 "for(var k in v){var e=document.getElementById(k);if(e)e.style.display=v[k]?'':'none'}}"

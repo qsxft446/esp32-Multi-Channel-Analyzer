@@ -141,6 +141,7 @@ typedef struct {
     int32_t  baseline;          /* текущий уровень нуля         */
     uint32_t cps;
     uint32_t freq_hz;
-    uint32_t run_ms;
+    uint32_t run_ms;            /* время набора: только пока спектр
+                                   набирается, «Сброс» обнуляет      */
     uint32_t load_pm;           /* загрузка обработки ядра 1, промилле */
 } mca_stats_t;

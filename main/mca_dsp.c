@@ -1,5 +1,6 @@
 #include "mca_dsp.h"
 #include "adc_cap.h"
+#include "adc_clk.h"
 
 #include <string.h>
 #include <stdlib.h>
@@ -102,7 +103,12 @@ static bool     s_need_prime = true;
 static int32_t  s_prime_left;
 
 static uint64_t s_last_events;
-static uint64_t s_t0_us;
+/* ВРЕМЯ НАБОРА, нс: сумма длительностей обработанных чанков (отсчётов /
+ * частота). Раньше время считалось как «сейчас минус момент сброса» и шло
+ * от старта ESP32 - и при остановленном наборе, и на вкладке
+ * осциллографа. Теперь оно растёт только когда спектр реально
+ * набирается; потерянные чанки в него не входят, как и в сам спектр. */
+static uint64_t s_run_ns;
 
 void mca_dsp_init(void)
 {
@@ -164,7 +170,7 @@ void mca_dsp_init(void)
     s_trap = 0; s_state = ST_IDLE;
     s_need_prime = true;
     s_base_fp = 0;
-    s_t0_us = esp_timer_get_time();
+    s_run_ns = 0;
     ESP_LOGI(TAG, "DSP готов: рекурсивная трапеция, порог по её выходу");
 }
 
@@ -179,7 +185,8 @@ static void hist_clear_locked(void)
     s_last_events = 0;
     s_base_init   = false;      /* перезахватить ноль заново */
     s_base_lost   = 0;
-    s_t0_us = esp_timer_get_time();
+    s_run_ns      = 0;
+    s_st.run_ms   = 0;          /* страница увидит ноль сразу, не через тик */
 }
 
 void mca_dsp_reset_spectrum(void)
@@ -692,7 +699,12 @@ void IRAM_ATTR mca_dsp_process(const uint16_t *data, size_t n)
     s_trap = trap;
     s_base_fp = base_fp;
 
+    /* длительность чанка - до блокировки: деление 64-битное */
+    const uint32_t fclk = adc_clk_get_freq();
+    const uint64_t dt_ns = fclk ? (uint64_t)n * 1000000000ULL / fclk : 0;
+
     xSemaphoreTake(s_lock, portMAX_DELAY);
+    s_run_ns               += dt_ns;
     s_st.skipped_pileup    += pile;
     s_st.skipped_deadtime  += dead;
     s_st.samples_processed += n;
@@ -709,7 +721,7 @@ void mca_dsp_tick_1s(void)
     xSemaphoreTake(s_lock, portMAX_DELAY);
     s_st.cps = (uint32_t)(s_st.total_events - s_last_events);
     s_last_events = s_st.total_events;
-    s_st.run_ms = (uint32_t)((esp_timer_get_time() - s_t0_us) / 1000);
+    s_st.run_ms = (uint32_t)(s_run_ns / 1000000ULL);
     s_st.chunks_lost = adc_cap_chunks_lost();
     /* Загрузка = доля тактов ядра, ушедших на обработку, за время с
      * прошлого замера. Близко к 100% - обработка не успевает, пойдут
