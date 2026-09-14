@@ -356,7 +356,9 @@ esp_err_t adc_cap_start(void)
      */
     cam_vsync_pulse();
 
-    ESP_LOGI(TAG, "после запуска: ctrl=0x%08lx ctrl1=0x%08lx cam_start=%d",
+    /* захват включается и выключается при каждой смене вкладки, поэтому
+     * эти сообщения - на отладочном уровне (по умолчанию не печатаются) */
+    ESP_LOGD(TAG, "после запуска: ctrl=0x%08lx ctrl1=0x%08lx cam_start=%d",
              (unsigned long)LCD_CAM.cam_ctrl.val,
              (unsigned long)LCD_CAM.cam_ctrl1.val,
              (int)LCD_CAM.cam_ctrl1.cam_start);
@@ -407,7 +409,7 @@ esp_err_t adc_cap_start(void)
                                         чтобы /diag мог наблюдать */
     }
 
-    ESP_LOGI(TAG, "захват идёт: %llu чанков за 150 мс",
+    ESP_LOGD(TAG, "захват идёт: %llu чанков за 150 мс",
              (unsigned long long)(s_chunks - before));
     return ESP_OK;
 }
@@ -418,7 +420,7 @@ esp_err_t adc_cap_stop(void)
     LCD_CAM.cam_ctrl1.cam_start = 0;
     gdma_stop(s_dma);
     s_running = false;
-    ESP_LOGI(TAG, "захват остановлен");
+    ESP_LOGD(TAG, "захват остановлен");
     return ESP_OK;
 }
 

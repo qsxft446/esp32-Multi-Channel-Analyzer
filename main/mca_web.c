@@ -166,6 +166,9 @@ static const char PAGE[] =
 "<button id=bwait onclick=scm(3) title='только по фронту, держит последний пойманный импульс'>Ждущий</button></span>"
 "<span class=lbl title='Перепад сигнала в сторону импульса (с учётом полярности) за 8 отсчётов, коды АЦП. Выше шума, но ниже амплитуды нужных импульсов.'>"
 "синхр. по фронту &ge;</span><input id=tl type=number value=30>"
+"<span class=lbl title='Синхронизация по амплитуде: показывать только импульсы, у которых высота над базой (коды АЦП, с учётом полярности) в этом диапазоне. 0 и 0 - без фильтра. Высота показанного импульса и сколько отброшено - под графиком.'>"
+"амплитуда от</span><input id=amin type=number value=0 min=0>"
+"<span class=lbl>до</span><input id=amax type=number value=0 min=0>"
 "<span class=lbl title='От какой линии отсчитывать ось Y'>ось Y от</span>"
 "<span class=seg><button id=rf0 onclick=setRef(0) title='от измеренной базовой линии'>базы</button>"
 "<button id=rf1 onclick=setRef(1) title='от середины шкалы АЦП, код 2048; на плате со входом ±5 В это 0 В'>2048</button>"
@@ -178,7 +181,8 @@ static const char PAGE[] =
 "<option value=128>128</option><option value=256>256</option>"
 "<option value=512>512</option><option value=1024>1024</option>"
 "<option value=2048>2048</option><option value=4096>4096</option>"
-"<option value=8192>8192 отсч</option></select>"
+"<option value=8192>8192</option><option value=16384>16384</option>"
+"<option value=32768>32768 отсч</option></select>"
 "<span class=lbl title='Подписи сетки по горизонтали: время или номера отсчётов. Отсчёты считаются от момента синхронизации (синяя метка = 0), до неё - отрицательные: так прямо с экрана читаются числа для L, G, «до/после вершины», перезапуска и поиска пика.'>ось X</span>"
 "<span class=seg><button id=bx0 onclick=setX(0)>мкс</button>"
 "<button id=bx1 onclick=setX(1)>отсч</button></span>"
@@ -495,10 +499,15 @@ static const char PAGE[] =
 /* ОСЦИЛЛОГРАФ. Прибор присылает окно с моментом синхронизации tg
    (-1 = свободный пуск). На экран идёт кусок длиной «развёртка»,
    момент синхронизации - на пятой части ширины, как у осциллографа. */
+/* диапазон синхронизации по амплитуде строкой, '' - фильтр выключен */
+"function AF(){var lo=+document.getElementById('amin').value||0,hi=+document.getElementById('amax').value||0;"
+"return hi>0?Math.min(lo,hi)+'&ndash;'+Math.max(lo,hi):''}"
 "function drawScope(j,wait){var a=j.d,sc=document.getElementById('sc');"
 "if(!a||!a.length){cv.width=cv.clientWidth;cx.clearRect(0,0,cv.width,cv.height);"
-"sc.innerHTML=wait?'ждущий режим: фронта &ge; '+j.lvl+' кодов ещё не было &mdash; '+"
-"'снизьте «синхр. по фронту»':'ждём данные...';return}"
+"sc.innerHTML=wait?(AF()?'ждущий режим: импульсов с амплитудой '+AF()+' кодов ещё не было'+"
+"(j.rej>0?' (отброшено '+j.rej+')':''):"
+"'ждущий режим: фронта &ge; '+j.lvl+' кодов ещё не было &mdash; снизьте «синхр. по фронту»'):"
+"'ждём данные...';return}"
 "var fh=window.REALHZ||8e6,tg=j.tg;window.LASTJ=j;window.LASTW=wait;"
 "var L=+document.getElementById('p_trap_L').value,G=+document.getElementById('p_trap_G').value;"
 "var Wn=Math.min(+document.getElementById('zm').value||512,a.length);"
@@ -522,8 +531,12 @@ static const char PAGE[] =
 "var thr=+document.getElementById('p_threshold').value;"
 "var sy=tg>=0?'<b style=color:#34d3c0>синхронизирован</b> по фронту '+j.rise+"
 "' кодов (уровень '+j.lvl+')':"
-"'<span style=color:#f0c45a>фронта &ge; '+j.lvl+' кодов нет &mdash; свободный пуск</span>';"
+"'<span style=color:#f0c45a>'+(AF()?'импульсов с амплитудой '+AF()+' кодов':'фронта &ge; '+j.lvl+' кодов')+"
+"' нет &mdash; свободный пуск</span>';"
 "if(wait&&j.age>1500)sy+=' &nbsp;<span style=opacity:.7>снимок '+(j.age/1000).toFixed(0)+' с назад</span>';"
+/* высота показанного импульса и работа фильтра амплитуды */
+"if(j.amp>=0)sy+=' &nbsp;высота импульса <b>'+j.amp+'</b> кодов';"
+"if(AF())sy+=' &nbsp;<span class=mut>фильтр '+AF()+', отброшено с прошлого кадра '+(j.rej||0)+'</span>';"
 "sc.innerHTML=sy+"
 "'<br>на экране '+Wn+' отсч = '+(Wn/fh*1e6).toFixed(1)+' мкс из '+(j.len||a.length)+' отсч = '+"
 "((j.len||a.length)/fh*1e6).toFixed(0)+' мкс записи'+"
@@ -697,21 +710,23 @@ static const char PAGE[] =
    SPER мс. Частота сама подстраивается под длину развёртки и скорость
    WiFi, и запросы не копятся в очередь. Просим только кусок под
    развёртку плюс запас L+G+16 слева, чтобы трапеция у края экрана
-   успела установиться. Ответ двоичный: пять int32 и отсчёты по 2 байта. */
+   успела установиться. Ответ двоичный: семь int32 и отсчёты по 2 байта. */
 "var SPER=100;"
-"function sparse(b){var v=new DataView(b),n=(b.byteLength-20)>>1,d=new Array(n);"
-"for(var i=0;i<n;i++)d[i]=v.getUint16(20+2*i,true);"
+"function sparse(b){var v=new DataView(b),n=(b.byteLength-28)>>1,d=new Array(n);"
+"for(var i=0;i<n;i++)d[i]=v.getUint16(28+2*i,true);"
 "return {tg:v.getInt32(0,true),rise:v.getInt32(4,true),age:v.getInt32(8,true),"
-"lvl:v.getInt32(12,true),len:v.getInt32(16,true),d:d}}"
+"lvl:v.getInt32(12,true),len:v.getInt32(16,true),amp:v.getInt32(20,true),"
+"rej:v.getInt32(24,true),d:d}}"
 "function sloop(){var md=document.getElementById('md').value;"
 "if(md!='1'&&md!='3'){window.SLAST=0;setTimeout(sloop,250);return}"
 /* пауза: прибор не опрашиваем, на экране последний кадр */
 "if(window.SRUN===0&&window.LASTJ){window.SLAST=0;window.SFPS=0;setTimeout(sloop,250);return}"
 "var t0=Date.now(),Wn=+document.getElementById('zm').value||512,"
 "M=(+document.getElementById('p_trap_L').value|0)+(+document.getElementById('p_trap_G').value|0)+16;"
-"fetch('/scope?lvl='+(+document.getElementById('tl').value||30)+'&n='+(Wn+M)+'&pre='+(Math.round(Wn*0.2)+M))"
+"fetch('/scope?lvl='+(+document.getElementById('tl').value||30)+'&n='+(Wn+M)+'&pre='+(Math.round(Wn*0.2)+M)+"
+"'&amin='+(+document.getElementById('amin').value||0)+'&amax='+(+document.getElementById('amax').value||0))"
 ".then(function(r){return r.arrayBuffer()}).then(function(b){"
-"if(b.byteLength>=20)drawScope(sparse(b),md=='3');"
+"if(b.byteLength>=28)drawScope(sparse(b),md=='3');"
 /* фактическая частота обновления, сглаженная - показывается под графиком */
 "var now=Date.now();if(window.SLAST)window.SFPS=(window.SFPS||1000/(now-window.SLAST))*0.8+200/(now-window.SLAST);"
 "window.SLAST=now})"
@@ -779,7 +794,7 @@ static esp_err_t h_scope(httpd_req_t *r)
     /* n - сколько отсчётов нужно странице, pre - сколько из них до
      * момента синхронизации. Отдаём только кусок под развёртку: время
      * ответа растёт с его длиной (см. LWIP_TCP_SND_BUF_DEFAULT). */
-    char q[64], v[12];
+    char q[128], v[12];
     size_t want = DIAG_SCOPE_LEN, pre = DIAG_SCOPE_PRE;
     if (httpd_req_get_url_query_str(r, q, sizeof(q)) == ESP_OK) {
         if (httpd_query_key_value(q, "lvl", v, sizeof(v)) == ESP_OK)
@@ -792,15 +807,25 @@ static esp_err_t h_scope(httpd_req_t *r)
             int x = atoi(v);
             if (x >= 0) pre = (size_t)x;
         }
+        /* синхронизация по амплитуде: amin..amax кодов, amax=0 - выкл */
+        int32_t lo = 0, hi = 0;
+        if (httpd_query_key_value(q, "amin", v, sizeof(v)) == ESP_OK)
+            lo = atoi(v);
+        if (httpd_query_key_value(q, "amax", v, sizeof(v)) == ESP_OK)
+            hi = atoi(v);
+        mca_diag_set_amp_window(lo, hi);
     }
+    /* прибор соберёт окно ровно под эту развёртку */
+    mca_diag_set_scope_want(want);
 
-    /* Ответ двоичный, little-endian: пять int32 (tg, rise, age, lvl,
-     * длина всего окна), затем отсчёты по uint16. Втрое короче JSON, и
-     * прибору не нужно форматировать до 8192 чисел через snprintf -
-     * от этого и зависит, сколько раз в секунду обновляется картинка.
-     * Буфер 16 КБ берём из PSRAM один раз (веб-сервер обрабатывает
-     * запросы по одному, общий буфер безопасен). */
-    enum { HDR = 5 * sizeof(int32_t) };
+    /* Ответ двоичный, little-endian: семь int32 (tg, rise, age, lvl,
+     * длина всего окна, высота импульса, отброшено фильтром амплитуды),
+     * затем отсчёты по uint16. Втрое короче JSON, и прибору не нужно
+     * форматировать десятки тысяч чисел через snprintf - от этого и
+     * зависит, сколько раз в секунду обновляется картинка. Буфер до 64 КБ
+     * берём из PSRAM один раз (веб-сервер обрабатывает запросы по одному,
+     * общий буфер безопасен). */
+    enum { HDR = 7 * sizeof(int32_t) };
     static uint8_t *raw;
     /* В PSRAM. Во внутренней памяти пробовали - стало хуже: 32 КБ
      * отнимались у WiFi, а копия конкурировала с DMA захвата, и вернулись
@@ -813,12 +838,15 @@ static esp_err_t h_scope(httpd_req_t *r)
     }
     uint16_t *d = (uint16_t *)(raw + HDR);
 
-    int32_t tg = -1, rise = 0, age = -1;
+    int32_t tg = -1, rise = 0, age = -1, amp = -1;
+    uint32_t rej = 0;
     size_t full = 0;
-    size_t n = mca_diag_get_scope(d, want, pre, &tg, &rise, &age, &full);
+    size_t n = mca_diag_get_scope(d, want, pre, &tg, &rise, &age, &full,
+                                  &amp, &rej);
     for (size_t i = 0; i < n; i++) d[i] &= MCA_DATA_MASK;
 
-    int32_t h[5] = { tg, rise, age, mca_diag_get_trig_level(), (int32_t)full };
+    int32_t h[7] = { tg, rise, age, mca_diag_get_trig_level(), (int32_t)full,
+                     amp, (int32_t)rej };
     memcpy(raw, h, HDR);
     httpd_resp_set_type(r, "application/octet-stream");
     httpd_resp_set_hdr(r, "Cache-Control", "no-store");
@@ -1637,8 +1665,12 @@ SUB_HEAD("Справка") SUB_NAV(N_DIAG, N_WIFI, N_HELP_ON)
 "<b>Авто</b> / <b>Ждущий</b>: в авто без фронта 0.15 с развёртка идёт "
 "свободно, чтобы были видны база и шум; ждущий обновляется только по "
 "фронту и держит последний пойманный импульс. Ширину окна задаёт "
-"«развёртка» &mdash; от 64 до 8192 отсчётов (при 8 МГц это 1 мс), "
-"цена деления подписана на графике. «Ось X»: подписи сетки в "
+"«развёртка» &mdash; от 64 до 32768 отсчётов (при 8 МГц это 4 мс), "
+"цена деления подписана на графике. «Амплитуда от&ndash;до»: "
+"синхронизация по амплитуде &mdash; кадр показывается, только если высота "
+"импульса над базой в этом диапазоне кодов АЦП (0 и 0 &mdash; без фильтра); "
+"высота показанного импульса и сколько импульсов отброшено &mdash; под "
+"графиком. «Ось X»: подписи сетки в "
 "микросекундах или в отсчётах. Отсчёты считаются от момента "
 "синхронизации (синяя метка = 0, до неё &mdash; отрицательные), так "
 "что числа для L, G, «до/после вершины», перезапуска и поиска пика "

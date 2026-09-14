@@ -1,5 +1,6 @@
 #include "mca_prof.h"
 
+#include "mca_config.h"
 #include "mca_dsp.h"
 
 #include <string.h>
@@ -112,6 +113,7 @@ void mca_prof_web_end(int ep)
  * Загрузка ядра = 100% минус доля его задачи простоя. Время
  * прерываний FreeRTOS засчитывает той задаче, которую они прервали,
  * так что обработчик захвата (он на ядре 0) виден как рост cpu0. */
+#if MCA_PROF_LOG
 #define PROF_TASKS_MAX 32
 #define PROF_TOP       5
 
@@ -190,6 +192,7 @@ static void cpu_report(void)
     ESP_LOGI(TAG, "cpu0 %ld%% cpu1 %ld%% |%s", (long)cpu[0], (long)cpu[1],
              line);
 }
+#endif  /* MCA_PROF_LOG */
 
 void mca_prof_tick_1s(void)
 {
@@ -244,6 +247,7 @@ void mca_prof_tick_1s(void)
      *   heap  - свободная внутренняя память / её минимум за всё время;
      *   busy  - доля времени задачи обработки в работе, в любом режиме
      *           (load - то же, но только внутри обработки спектра). */
+#if MCA_PROF_LOG
     mca_stats_t st;
     mca_dsp_get_stats(&st);
     ESP_LOGI(TAG,
@@ -275,6 +279,18 @@ void mca_prof_tick_1s(void)
     }
 
     cpu_report();
+#else
+    /* Без профиля - одна строка, и только если были потери: сколько и
+     * какой запрос обслуживался при последней из них. */
+    (void)sn;
+    if (np) {
+        uint32_t lost = 0;
+        for (uint32_t i = 0; i < np; i++) lost += nev[i].lost;
+        ESP_LOGW(TAG, "потеряно чанков: %lu, при последней потере шёл %s",
+                 (unsigned long)lost,
+                 EP_NAME[nev[0].web_ep < PROF_EP_CNT ? nev[0].web_ep : 0]);
+    }
+#endif
 }
 
 void mca_prof_get(mca_prof_t *out)

@@ -96,16 +96,18 @@ window.fetch = function(u){
         fl:[1000000,2000000,4000000,5000000,6666667,8000000,8888889,
             10000000,11428571,13333333,16000000,20000000]};
   else if (u.indexOf('/scope') === 0) {
-    /* двоичный ответ как у прибора: 5 x int32, затем отсчёты uint16 */
+    /* двоичный ответ как у прибора: 7 x int32 (tg, rise, age, lvl, len,
+       высота импульса, отброшено), затем отсчёты uint16 */
     var q = new URLSearchParams(u.split('?')[1] || ''),
-        n = Math.min(+q.get('n') || 4096, 8192), pre = +q.get('pre') || 0,
-        b = new ArrayBuffer(20 + 2 * n), v = new DataView(b);
+        n = Math.min(+q.get('n') || 4096, 32768), pre = +q.get('pre') || 0,
+        b = new ArrayBuffer(28 + 2 * n), v = new DataView(b);
     v.setInt32(0, pre, true); v.setInt32(4, 300, true); v.setInt32(8, 50, true);
-    v.setInt32(12, 30, true); v.setInt32(16, 8192, true);   /* DIAG_SCOPE_LEN */
+    v.setInt32(12, 30, true); v.setInt32(16, 32768, true);  /* DIAG_SCOPE_LEN */
+    v.setInt32(20, 600, true); v.setInt32(24, 0, true);
     for (var i = 0; i < n; i++) {
       var k = i - pre, x = 2048 + (Math.random() - 0.5) * 6;
       if (k >= 0) x += k < 5 ? 600 * (k + 1) / 5 : 600 * Math.exp(-(k - 5) / 140);
-      v.setUint16(20 + 2 * i, Math.round(x), true);
+      v.setUint16(28 + 2 * i, Math.round(x), true);
     }
     return Promise.resolve({arrayBuffer: function(){return Promise.resolve(b)}});
   }
