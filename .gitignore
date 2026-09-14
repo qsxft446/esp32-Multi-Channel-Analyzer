@@ -14,3 +14,5 @@ __pycache__/
 build_log.txt
 111.txt
 image-*.png
+# исходные фото с телефона (в README - уменьшенные копии)
+docs/IMG_*.jpg
