@@ -300,7 +300,11 @@ static const char PAGE[] =
 /* Старт/Стоп относятся к открытой вкладке: на «Спектре» - набор
    спектра, на «Конфиг MCA» - только осциллограф. На паузе осциллограф
    не опрашивается и держит последний кадр (линейка работает). */
-"function run(on){if(isScope()){window.SRUN=on?1:0;cmd(on?'scope_start':'scope_stop');"
+/* RLOCK - как MDLOCK для режима: ответ /stat, ушедший с прибора ДО
+   команды, иначе вернул бы прежнее состояние, и опрос осциллографа и
+   подпись в шапке на секунду дёрнулись бы обратно */
+"function run(on){window.RLOCK=Date.now()+1500;"
+"if(isScope()){window.SRUN=on?1:0;cmd(on?'scope_start':'scope_stop');"
 "runChip(on,1)}else{cmd(on?'start':'stop');runChip(on,0)}}"
 /* подпись в шапке: состояние той работы, что на открытой вкладке */
 "function runChip(on,sc){"
@@ -688,8 +692,8 @@ static const char PAGE[] =
 "document.getElementById('bt').textContent=hms(j.ms/1000);"
 "document.getElementById('bc').textContent=j.cps;"
 "document.getElementById('be').textContent=j.ev;"
-"if(j.srun!==undefined)window.SRUN=j.srun;"
-"if(isScope())runChip(j.srun,1);else runChip(j.run,0);"
+"if(!(window.RLOCK>Date.now())){if(j.srun!==undefined)window.SRUN=j.srun;"
+"if(isScope())runChip(j.srun,1);else runChip(j.run,0)}"
 "document.getElementById('fchip').textContent=(j.freq/1e6).toFixed(2)+' МГц';"
 /* Режим ОБЩИЙ для всего прибора, а не для вкладки: если его сменили
    из другого окна, список должен это показать, иначе страница рисует

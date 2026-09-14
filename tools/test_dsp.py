@@ -165,16 +165,20 @@ CHUNK_US = CAP_CHUNK_SAMPLES / FS * 1e6
 LVL = 30
 
 
-def run_scope(sig, mode, neg=False):
+def scope_run(sig, mode, neg=False, **kw):
     # Период снимков и ожидание авто уменьшены в сто раз, чтобы тест
     # шёл быстро; логика движка от этого не меняется.
-    s = Scope(level=LVL, snap_us=1000, auto_us=1500, neg=neg)
+    s = Scope(level=LVL, snap_us=1000, auto_us=1500, neg=neg, **kw)
     now = 0.0
     step = CAP_CHUNK_SAMPLES
     for off in range(0, len(sig) - step + 1, step):
         s.feed(sig[off:off + step], mode, now, off)
         now += CHUNK_US
-    return s.pub
+    return s
+
+
+def run_scope(sig, mode, neg=False, **kw):
+    return scope_run(sig, mode, neg, **kw).pub
 
 
 def rise_at(buf, i):
@@ -217,6 +221,43 @@ check("авто без фронта пускает развёртку свобо
 check("свободные окна тоже непрерывны",
       all(cap == quiet[a:a + SLEN] for cap, _, _, a in qa))
 check("ждущий без фронта ничего не публикует", len(qn) == 0)
+
+# Окно под развёртку: страница просит 512 отсчётов - прибор собирает
+# 512 + предыстория, а не всё окно.
+ws = scope_run(sig6, 2, want=512)
+wlen = sorted(set(len(cap) for cap, _, _, _ in ws.pub))
+print(f"  развёртка 512: снимков {len(ws.pub)}, длина окна {wlen} "
+      f"(ждали {512 + SPRE})")
+check("окно собирается под развёртку",
+      len(ws.pub) >= 10 and wlen == [512 + SPRE]
+      and sorted(set(t for _, t, _, _ in ws.pub)) == [SPRE]
+      and all(cap == sig6[a:a + len(cap)] for cap, _, _, a in ws.pub))
+
+# Синхронизация по амплитуде: импульсы двух высот вперемешку, фильтр
+# пропускает только высокие.
+rng6a = random.Random(12)
+pa6, aa6, ta6 = [], [], 5000
+while ta6 < 1_500_000:
+    pa6.append(ta6)
+    aa6.append(rng6a.choice((60, 200)))
+    ta6 += rng6a.randint(3000, 20000)
+siga = make_pulse_train(ta6 + 5000, aa6, pa6, fs_hz=FS, rise_ns=500,
+                        tau_us=4.3, noise_rms=3.0, seed=13)
+fa = scope_run(siga, 2, amin=140, amax=320)
+fall = scope_run(siga, 2)
+print(f"  фильтр 140..320: снимков {len(fa.pub)}, высоты "
+      f"{min(fa.amps) if fa.amps else '-'}..{max(fa.amps) if fa.amps else '-'}, "
+      f"отброшено {sum(fa.rejs)}; без фильтра высоты "
+      f"{min(fall.amps)}..{max(fall.amps)}")
+check("фильтр амплитуды пропускает только импульсы в диапазоне",
+      len(fa.pub) >= 5 and all(140 <= a <= 320 for a in fa.amps)
+      and sum(fa.rejs) > 0,
+      f"снимков {len(fa.pub)}, отброшено {sum(fa.rejs)}")
+check("без фильтра видны обе высоты",
+      min(fall.amps) < 140 and max(fall.amps) >= 140)
+check("окна с фильтром тоже непрерывны и с фронтом на месте",
+      all(cap == siga[a:a + len(cap)] for cap, _, _, a in fa.pub)
+      and sorted(set(t for _, t, _, _ in fa.pub)) == [SPRE])
 
 # ------------------------------------------------------------------ L7
 print("\n=== УРОВЕНЬ 7: импульсы вниз (полярность «−») ===")
