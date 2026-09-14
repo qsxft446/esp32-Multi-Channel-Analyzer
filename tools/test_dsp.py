@@ -1,0 +1,340 @@
+"""Многоуровневая проверка тракта обработки MCA. Железо не нужно.
+
+    python tools/test_dsp.py
+
+Модель берёт константы прямо из main/mca_config.h, поэтому тесты
+следуют за прошивкой при изменении размера чанка и числа каналов.
+"""
+import os
+import random
+import statistics
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from dspmodel import (DSP, CAP_CHUNK_SAMPLES, MCA_ADC_MAX, MCA_CHANNELS,
+                      Params, make_pulse_train, run)
+
+fails = []
+
+
+def check(name, cond, detail=""):
+    print(f"  [{'OK ' if cond else 'ПРОВАЛ'}] {name}" +
+          (f"  -- {detail}" if detail else ""))
+    if not cond:
+        fails.append(name)
+
+
+print(f"\nконфигурация из mca_config.h: чанк {CAP_CHUNK_SAMPLES} отсч, "
+      f"каналов {MCA_CHANNELS}, шкала АЦП 0..{MCA_ADC_MAX}")
+
+# ------------------------------------------------------------------ L1
+print("\n=== УРОВЕНЬ 1: базовая работоспособность ===")
+d = run(make_pulse_train(4096, [800], [1500]), Params())
+check("одиночный импульс детектируется", len(d.events) == 1,
+      f"каналы: {[e[0] for e in d.events]}")
+
+lin = []
+for a in (200, 400, 800, 1600):
+    dd = run(make_pulse_train(4096, [a], [1500]), Params())
+    if dd.events:
+        lin.append((a, dd.events[0][0]))
+print("  амплитуда -> канал: " +
+      ", ".join(f"{a}->{c}" for a, c in lin))
+ratios = [c / a for a, c in lin]
+check("отклик линеен", len(ratios) == 4 and
+      (max(ratios) - min(ratios)) / statistics.mean(ratios) < 0.05,
+      f"разброс {100*(max(ratios)-min(ratios))/statistics.mean(ratios):.1f}%")
+
+# ------------------------------------------------------------------ L2
+print("\n=== УРОВЕНЬ 2: события на стыке чанков ===")
+print("  Моноэнергетика без шума, считаем интегрированием (Способ 1):")
+print("  оно берёт отсчёты вокруг запомненного положения пика, поэтому")
+print("  ошибка индекса видна сразу. У самого интегрирования есть разброс")
+print("  в пару процентов (плавает оценка базы), поэтому считаем только")
+print("  грубые выбросы - дальше 10% от основного канала.\n")
+
+# Интервалы СЛУЧАЙНЫЕ. При постоянном шаге фазы импульсов относительно
+# границы чанка ложатся на решётку и могут целиком перепрыгнуть узкое
+# окно, где проявляется ошибка: шаг 2000 при чанке 2046 попадал устаревшим
+# индексом на следующий импульс, шаг 3001 давал решётку в 136 отсчётов
+# при окне в 50. Зерно фиксировано - результат воспроизводим.
+N, AMP = 200, 800
+_rng = random.Random(3)
+pos, _t = [], 3000
+for _ in range(N):
+    pos.append(_t)
+    _t += _rng.randint(2500, 3500)
+sig = make_pulse_train(pos[-1] + 4000, [AMP] * N, pos)
+
+res = {}
+for label, kw in (("без пересчёта peak_pos (старый баг)", {"rebase": False}),
+                  ("как в прошивке сейчас", {"rebase": True})):
+    dd = run(sig, Params(algo=1), **kw)
+    ch = [c for c, _ in dd.events]
+    mode = statistics.mode(ch)
+    bad = [c for c in ch if abs(c - mode) > 0.1 * mode]
+    res[label] = len(bad)
+    print(f"  {label}: событий {len(ch)}, основной канал {mode}, "
+          f"грубых выбросов {len(bad)} ({100*len(bad)/len(ch):.1f}%)")
+
+check("баг воспроизводится на модели",
+      res["без пересчёта peak_pos (старый баг)"] > 0)
+check("текущая прошивка выбросов не даёт",
+      res["как в прошивке сейчас"] == 0)
+
+# ------------------------------------------------------------------ L3
+print("\n=== УРОВЕНЬ 3: разрешение при реальном шуме (15 кодов RMS) ===")
+sig = make_pulse_train(pos[-1] + 4000, [AMP] * N, pos, noise_rms=15.0, seed=7)
+dd = run(sig, Params())
+ch = [c for c, _ in dd.events]
+med = statistics.median(ch)
+# Ширину считаем по событиям пика: одно шумовое срабатывание далеко
+# от пика раздувает СКО в разы и делает число бессмысленным.
+core = [c for c in ch if abs(c - med) < 0.1 * med]
+stray = len(ch) - len(core)
+fwhm = 2.355 * statistics.pstdev(core)
+print(f"  событий {len(ch)} (импульсов {N}): в пике {len(core)}, "
+      f"вне пика {stray}")
+print(f"  центр {med:.0f}, FWHM {fwhm:.1f} кан = {100*fwhm/med:.2f}%")
+check("все импульсы найдены", len(core) == N, f"в пике {len(core)} из {N}")
+# Порог 20 при шуме 15 кодов - это около 4 сигм выхода трапеции,
+# на полумиллионе отсчётов единичные ложные срабатывания ожидаемы.
+check("ложных срабатываний единицы", stray <= 3, f"вне пика {stray}")
+
+# ------------------------------------------------------------------ L4
+print("\n=== УРОВЕНЬ 4: «кодов на канал» ===")
+print("  Канал = амплитуда / кодов на канал. Амплитуда делится целиком,")
+print("  без округления до кода, поэтому доли кода на канал дают")
+print("  настоящую подробность, а не «гребёнку» из пустых каналов.\n")
+meds, off4 = {}, {}
+for cpc in (2000, 1000, 500, 250):
+    ch = [c for c, _ in run(sig, Params(cpc=cpc)).events]
+    meds[cpc] = statistics.median(ch)
+    off4[cpc] = sum(1 for c in ch if c % 4) / len(ch)
+    print(f"  {cpc/1000:5.2f} кода на канал: пик в канале {meds[cpc]:6.0f}, "
+          f"каналов не кратных 4: {100*off4[cpc]:3.0f}%")
+check("канал обратно пропорционален «кодов на канал»",
+      all(abs(meds[c] * c / (meds[1000] * 1000) - 1) < 0.01 for c in meds),
+      ", ".join(f"{c/1000}: {meds[c]:.0f}" for c in meds))
+check("при 0.25 кода на канал заняты все каналы, не только кратные 4",
+      off4[250] > 0.5, f"не кратных 4: {100*off4[250]:.0f}%")
+
+# ------------------------------------------------------------------ L5
+print("\n=== УРОВЕНЬ 5: шкала и запас АЦП ===")
+print("  База в СЕРЕДИНЕ шкалы АЦП (2048), импульсы положительные:")
+print("  амплитуда не может превысить 4095-2048 = 2047 кодов.")
+print("  Верх шкалы = каналов x кодов на канал.\n")
+
+BASE = 2048
+headroom = MCA_ADC_MAX - BASE
+
+
+def one(amp_in, **pk):
+    dd = run(make_pulse_train(6000, [amp_in], [2500], baseline=BASE),
+             Params(**pk))
+    return (dd.events[0][0] if dd.events else None), dd.overflow
+
+
+print("  1 код на канал и 2048 каналов (по умолчанию) - шкала до 2048 кодов:")
+for amp_in in (500, 1000, 2000, 4000, 8000):
+    c, _ = one(amp_in)
+    tag = "  <- уже в ограничении АЦП" if amp_in > headroom else ""
+    print(f"    вход {amp_in:5d} кодов -> канал {c:5d} "
+          f"({100*c/2048:3.0f}% из 2048){tag}")
+c2000, _ = one(2000)
+c4000, _ = one(4000)
+c8000, _ = one(8000)
+# Трапеция отдаёт чуть меньше высоты входа (спад успевает пройти за
+# окно L: 2000 -> ~1886), поэтому запас «90% шкалы», а не впритык.
+check("2048 каналов по 1 коду покрывают весь запас АЦП",
+      0.9 * 2048 < c2000 < 2048, f"канал {c2000}")
+check("после ограничения канал не растёт и остаётся в шкале",
+      c4000 == c8000 and c8000 < 2048, f"{c4000} и {c8000}")
+c05, _ = one(1800, cpc=500)
+print(f"  0.5 кода на канал: вход 1800 кодов -> канал {c05} из 4096")
+check("0.5 кода на канал разворачивает тот же запас на 4096 каналов",
+      0.8 * 4096 < c05 < 4096, f"канал {c05}")
+
+# ------------------------------------------------------------------ L6
+print("\n=== УРОВЕНЬ 6: осциллограф - синхронизация по фронту ===")
+from scopemodel import Scope, LEN as SLEN, PRE as SPRE, SPAN as SSPAN
+
+FS = 10e6
+CHUNK_US = CAP_CHUNK_SAMPLES / FS * 1e6
+LVL = 30
+
+
+def run_scope(sig, mode, neg=False):
+    # Период снимков и ожидание авто уменьшены в сто раз, чтобы тест
+    # шёл быстро; логика движка от этого не меняется.
+    s = Scope(level=LVL, snap_us=1000, auto_us=1500, neg=neg)
+    now = 0.0
+    step = CAP_CHUNK_SAMPLES
+    for off in range(0, len(sig) - step + 1, step):
+        s.feed(sig[off:off + step], mode, now, off)
+        now += CHUNK_US
+    return s.pub
+
+
+def rise_at(buf, i):
+    return buf[i] - buf[i - SSPAN]
+
+
+# импульсы как у вас на экране: ~60 кодов, фронт 0.5 мкс, спад 4.3 мкс
+rng6 = random.Random(11)
+p6, t6 = [], 5000
+while t6 < 1_500_000:
+    p6.append(t6)
+    t6 += rng6.randint(3000, 20000)
+sig6 = make_pulse_train(t6 + 5000, [60] * len(p6), p6, fs_hz=FS,
+                        rise_ns=500, tau_us=4.3, noise_rms=3.0, seed=5)
+
+pub = run_scope(sig6, 2)
+tpos = sorted(set(t for _, t, _, _ in pub))
+print(f"  ждущий, импульсы есть: снимков {len(pub)}, "
+      f"момент синхронизации в отсчёте {tpos} (предыстория {SPRE})")
+check("снимки идут", len(pub) >= 10, f"{len(pub)}")
+check("фронт всегда в одном месте окна", tpos == [SPRE], f"{tpos}")
+check("окно непрерывно - совпадает с куском исходного сигнала",
+      all(cap == sig6[a:a + SLEN] for cap, _, _, a in pub))
+check("срабатывание ровно на пересечении уровня",
+      all(rise_at(cap, t) >= LVL > rise_at(cap, t - 1)
+          for cap, t, _, _ in pub))
+
+pa = run_scope(sig6, 1)
+print(f"  авто, импульсы есть: снимков {len(pa)}, из них "
+      f"синхронизированных {sum(1 for _, t, _, _ in pa if t >= 0)}")
+check("авто при импульсах синхронизируется",
+      sum(1 for _, t, _, _ in pa if t == SPRE) >= 0.8 * len(pa))
+
+quiet = make_pulse_train(600_000, [], [], fs_hz=FS, noise_rms=3.0, seed=6)
+qa = run_scope(quiet, 1)
+qn = run_scope(quiet, 2)
+print(f"  без импульсов: авто дал {len(qa)} снимков, ждущий {len(qn)}")
+check("авто без фронта пускает развёртку свободно",
+      len(qa) > 0 and all(t == -1 for _, t, _, _ in qa))
+check("свободные окна тоже непрерывны",
+      all(cap == quiet[a:a + SLEN] for cap, _, _, a in qa))
+check("ждущий без фронта ничего не публикует", len(qn) == 0)
+
+# ------------------------------------------------------------------ L7
+print("\n=== УРОВЕНЬ 7: импульсы вниз (полярность «−») ===")
+print("  Тот же сигнал, перевёрнутый относительно шкалы АЦП: база наверху,")
+print("  импульсы идут вниз. С полярностью «−» всё должно совпасть.\n")
+sig7 = make_pulse_train(pos[-1] + 4000, [AMP] * N, pos, noise_rms=15.0, seed=7)
+inv7 = [MCA_ADC_MAX - v for v in sig7]
+chp = [c for c, _ in run(sig7, Params()).events]
+chn = [c for c, _ in run(inv7, Params(polarity=1)).events]
+ch0 = [c for c, _ in run(inv7, Params()).events]
+print(f"  вверх, полярность +: событий {len(chp)}; вниз, полярность −: "
+      f"{len(chn)}; вниз без переключения: {len(ch0)}")
+check("полярность «−» даёт тот же спектр, что и прямой сигнал", chp == chn)
+# Без переключения импульсы вниз НЕ пропадают: после каждого из них
+# трапеция даёт положительный провал-«отражение», он пересекает порог.
+# Событий даже больше, чем импульсов, но все они в низких каналах -
+# на месте настоящего пика нет ни одного.
+mp = sorted(chp)[len(chp) // 2]
+near0 = sum(1 for c in ch0 if abs(c - mp) < 0.1 * mp)
+check("без переключения полярности спектр ложный (нет событий у пика)",
+      near0 == 0 and len(ch0) > 0,
+      f"событий {len(ch0)}, у настоящего пика ({mp}) - {near0}")
+
+inv6 = [MCA_ADC_MAX - v for v in sig6]
+pn7 = run_scope(inv6, 2, neg=True)
+check("осциллограф синхронизируется по фронту вниз",
+      len(pn7) >= 10 and sorted(set(t for _, t, _, _ in pn7)) == [SPRE]
+      and all(cap == inv6[a:a + SLEN] for cap, _, _, a in pn7),
+      f"снимков {len(pn7)}")
+
+# ------------------------------------------------------------------ L8
+print("\n=== УРОВЕНЬ 8: ускорение без изменения результата ===")
+print("  Прошивка считает разность трапеции для всего чанка векторными")
+print("  командами (16 бит с насыщением), порог проверяет восьмёрками по")
+print("  максимуму и переворачивает полярность словами по два отсчёта.")
+print("  Прежний поштучный и новый варианты прогоняются на одних и тех же")
+print("  сигналах: события, каналы, гистограмма и состояние фильтра обязаны")
+print("  совпасть, а насыщение 16 бит - ни разу не наступить.\n")
+from dspmodel import invert_words
+
+
+def same(sig8, p, **new):
+    a = run(sig8, p)
+    b = run(sig8, p, **new)
+    return a, b, (a.events == b.events and a.hist == b.hist
+                  and a.trap == b.trap and a.overflow == b.overflow)
+
+
+# Смесь случайных амплитуд и интервалов: срабатывания ложатся на все
+# восемь позиций в восьмёрке и на остаток чанка, не кратный восьми.
+rng8 = random.Random(8)
+pos8, t8 = [], 1000
+while t8 < 400_000:
+    pos8.append(t8)
+    t8 += rng8.randint(150, 3000)
+amp8 = [rng8.randint(40, 1800) for _ in pos8]
+mix = make_pulse_train(t8 + 4000, amp8, pos8, noise_rms=6.0, seed=9)
+
+# Крайние отсчёты 0 и 4095 вперемешку: разность достигает ±8190 -
+# проверка, что 16 бит хватает и насыщение не наступает.
+rng7 = random.Random(7)
+extreme = [MCA_ADC_MAX if rng7.random() < 0.5 else 0 for _ in range(60_000)]
+
+lanes, sats = [0] * 9, 0
+# L и G с разными остатками от деления на 8 - это разные сдвиги
+# выравнивания у трёх невыровненных потоков векторной разности.
+for name, s8, p8 in (("основной L=20 G=44", mix, Params()),
+                     ("L=7 G=13", mix, Params(trap_L=7, trap_G=13)),
+                     ("L=3 G=9", mix, Params(trap_L=3, trap_G=9)),
+                     ("L=8 G=16", mix, Params(trap_L=8, trap_G=16)),
+                     ("L=64 G=128", mix, Params(trap_L=64, trap_G=128,
+                                                search=200, rearm=192)),
+                     ("интегрирование", mix, Params(algo=1)),
+                     ("низкий порог, шум", sig, Params(threshold=4)),
+                     ("мелкие импульсы", sig6[:400_000], Params(threshold=8)),
+                     ("крайние 0/4095", extreme, Params(trap_L=5, trap_G=11))):
+    a, b, ok = same(s8, p8, vec=True)
+    lanes = [x + y for x, y in zip(lanes, b.lanes)]
+    sats += b.sat
+    check(f"векторно = поштучно: {name}", ok and b.sat == 0,
+          f"событий {len(a.events)} и {len(b.events)}, насыщений {b.sat}")
+print(f"  где сработал порог: позиции 0-7 в восьмёрке {lanes[:8]}, "
+      f"в остатке {lanes[8]}; насыщений 16 бит всего {sats}")
+check("срабатывания были на всех позициях восьмёрки и в остатке",
+      all(lanes), f"{lanes}")
+
+# Переворот словами - перебором: каждая 16-битная половина при разных
+# соседях, включая мусор в старших битах (маска обязана его убрать).
+bad8 = 0
+others = (0, 1, 0x0FFF, 0x1000, 0x7FFF, 0x8000, 0xF000, 0xFFFF, 0xABCD)
+for v in range(65536):
+    ref = MCA_ADC_MAX - (v & 0xFFF)
+    for o in others:
+        ro = MCA_ADC_MAX - (o & 0xFFF)
+        if invert_words([v, o]) != [ref, ro]:
+            bad8 += 1
+        if invert_words([o, v]) != [ro, ref]:
+            bad8 += 1
+check("переворот словами = поштучно для всех 65536 значений половины",
+      bad8 == 0, f"расхождений {bad8}")
+check("нечётная длина: последний отсчёт переворачивается по одному",
+      invert_words([5, 6, 0x1007]) ==
+      [MCA_ADC_MAX - 5, MCA_ADC_MAX - 6, MCA_ADC_MAX - 7])
+
+rng9 = random.Random(10)
+dirty = [(MCA_ADC_MAX - v) | (rng9.randint(0, 15) << 12) for v in mix]
+a, b, ok = same(dirty, Params(polarity=1), word_invert=True)
+check("полярность «−»: словами = поштучно на всём тракте, с мусором "
+      "в старших битах", ok, f"событий {len(a.events)}")
+a, b, ok = same(dirty, Params(polarity=1, algo=1), word_invert=True,
+                vec=True)
+check("оба ускорения вместе, интегрирование", ok,
+      f"событий {len(a.events)}")
+
+print("\n" + "=" * 62)
+if fails:
+    print(f"ПРОВАЛЕНО: {len(fails)}")
+    for f in fails:
+        print("   -", f)
+    sys.exit(1)
+print("Все проверки пройдены")

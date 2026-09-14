@@ -1,0 +1,65 @@
+# --- ESP32-S3 N16R8 ---
+CONFIG_IDF_TARGET="esp32s3"
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+
+# Octal PSRAM (R8). Занимает GPIO26-37 - наши 4..18 свободны.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_USE_MALLOC=y
+
+# CPU на максимум
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_FREERTOS_HZ=1000
+
+# --- КРИТИЧНО: никакого энергосбережения ---
+# DFS менял бы частоту APB -> поплыла бы частота CLK для АЦП.
+CONFIG_PM_ENABLE=n
+CONFIG_FREERTOS_USE_TICKLESS_IDLE=n
+
+# HTTP server
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
+CONFIG_HTTPD_MAX_URI_LEN=512
+
+# Оптимизация по скорости - важно для DSP-цикла
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+
+# Проверки assert() выключены: они сидят в драйверных путях и в
+# обработчиках прерываний IDF, а поток АЦП идёт на пределе.
+# ОБРАТНАЯ СТОРОНА: при сбое не будет внятного сообщения с именем
+# файла и строкой - только адрес. Если ловите непонятный креш,
+# временно верните CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_ENABLE=y.
+CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_DISABLE=y
+
+# Стек main
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
+# Ядро 1 отдано под обработку потока АЦП и намеренно загружено почти
+# полностью. Штатная проверка задачи простоя на этом ядре в такой
+# схеме только мешает - она рассчитана на обычные приложения.
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=n
+
+# Буфер отправки TCP. По умолчанию 5760 байт (4 сегмента): ответ /scope
+# в 16-32 КБ уходил за 6 обменов "пачка - подтверждение" по WiFi, и
+# обновление осциллограммы замирало тем сильнее, чем длиннее развёртка;
+# одна потерянная пачка в хвосте стоила повторной передачи по таймеру
+# (1.5 с). 16 КБ - ответ целиком за один-два обмена. Это предел, а не
+# заранее занятая память: буферы берутся только под то, что в пути.
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=16384
+
+# Учёт времени задач: раз в секунду в консоль идёт загрузка каждого
+# ядра и самые занятые задачи (см. mca_prof.c). Стоит одно чтение
+# таймера на переключение задач. Нужно, чтобы про ядро 0 (WiFi)
+# судить по замеру, а не по догадке.
+CONFIG_FREERTOS_USE_TRACE_FACILITY=y
+CONFIG_FREERTOS_USE_STATS_FORMATTING_FUNCTIONS=y
+CONFIG_FREERTOS_VTASKLIST_INCLUDE_COREID=y
+CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
+CONFIG_FREERTOS_RUN_TIME_COUNTER_TYPE_U64=y
+CONFIG_FREERTOS_RUN_TIME_STATS_USING_ESP_TIMER=y
+
+# Привязку задачи TCP/IP к ядру 0 пробовали - стало ХУЖЕ: веб-задача
+# дольше ждёт своё ядро и дольше держит блокировку, которая нужна
+# обработке на каждом чанке. Оставляем как было, без привязки.

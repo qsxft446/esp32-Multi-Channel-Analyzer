@@ -1,0 +1,16 @@
+# сборка ESP-IDF
+build/
+managed_components/
+dependencies.lock
+sdkconfig.old
+sdkconfig.backup*
+
+# Python
+__pycache__/
+*.pyc
+
+# логи и черновики
+*.log
+build_log.txt
+111.txt
+image-*.png

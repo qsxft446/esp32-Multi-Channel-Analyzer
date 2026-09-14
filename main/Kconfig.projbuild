@@ -1,0 +1,11 @@
+menu "MCA configuration"
+
+    config MCA_WIFI_SSID
+        string "WiFi SSID"
+        default "myssid"
+
+    config MCA_WIFI_PASS
+        string "WiFi password"
+        default "mypassword"
+
+endmenu
