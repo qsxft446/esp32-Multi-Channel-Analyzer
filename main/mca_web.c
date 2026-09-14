@@ -27,8 +27,8 @@
 static const char *TAG = "mca_web";
 
 volatile mca_mode_t mca_mode        = MCA_MODE_SPECTRUM;
-volatile bool       mca_cmd_start   = false;
-volatile bool       mca_cmd_stop    = false;
+volatile bool       mca_spec_run    = false; /* до «Старт» набора нет  */
+volatile bool       mca_scope_run   = true;  /* открыли - сразу видно  */
 volatile bool       mca_cmd_clear   = false;
 volatile int        mca_cmd_freq_idx= -1;
 
@@ -138,10 +138,10 @@ static const char PAGE[] =
 "<div class=status id=st>подключение...</div>"
 "<section class=panel>"
 "<div class=row><div class=grp>"
-"<button class='btn green' onclick=cmd('start')>&#9654; Старт</button>"
-"<button class='btn amber' onclick=cmd('stop')>&#9632; Стоп</button>"
-"<button class='btn red' onclick=cmd('clear')>&#8634; Сброс</button></div>"
-"<div class=ml style='display:flex;align-items:center;gap:16px;flex-wrap:wrap'>"
+"<button class='btn green' onclick=run(1)>&#9654; Старт</button>"
+"<button class='btn amber' onclick=run(0)>&#9632; Стоп</button>"
+"<button class='btn red' id=bclr onclick=cmd('clear')>&#8634; Сброс</button></div>"
+"<div class=ml id=g_big style='display:flex;align-items:center;gap:16px;flex-wrap:wrap'>"
 "<span class=big id=bt>00:00:00</span><span class=mut>|</span>"
 "<span class='big ac'><span id=bc>0</span><span class=mut style=font-size:12px> CPS</span></span>"
 "<span class=mut>|</span>"
@@ -293,6 +293,17 @@ static const char PAGE[] =
 "document.getElementById('p_algo').onchange=showFields;"
 "document.getElementById('p_cpc').oninput=cpcTop;document.getElementById('p_nch').onchange=cpcTop;"
 "function cmd(c){fetch('/cmd?do='+c)}"
+/* Старт/Стоп относятся к открытой вкладке: на «Спектре» - набор
+   спектра, на «Конфиг MCA» - только осциллограф. На паузе осциллограф
+   не опрашивается и держит последний кадр (линейка работает). */
+"function run(on){if(isScope()){window.SRUN=on?1:0;cmd(on?'scope_start':'scope_stop');"
+"runChip(on,1)}else{cmd(on?'start':'stop');runChip(on,0)}}"
+/* подпись в шапке: состояние той работы, что на открытой вкладке */
+"function runChip(on,sc){"
+"document.getElementById('rundot').className=on?'dot':'dot off';"
+"document.getElementById('runtxt').textContent=sc?(on?'осциллограф идёт':'осциллограф на паузе'):"
+"(on?'идёт набор':'остановлен');"
+"document.getElementById('runchip').className=on?'chip':'chip warn'}"
 /* Выгрузка спектра файлом. Часов у прибора нет - время для файла
    берётся отсюда: Unix-время и смещение пояса в минутах. Ответ идёт
    как вложение, поэтому страница никуда не уходит. */
@@ -612,7 +623,7 @@ static const char PAGE[] =
 "var SCM=1;"
 "function showCtl(){var m=document.getElementById('md').value,sp=(m=='0'||m=='2'),sc=!sp;"
 "cv.style.cursor=sc?'crosshair':'';cv.style.touchAction=sc?'none':'';"
-"var v={g_sp:sp,g_sc:sc,g_zm:sc,g_leg:sc,g_rul:sc,"
+"var v={g_sp:sp,g_sc:sc,g_zm:sc,g_leg:sc,g_rul:sc,g_big:sp,bclr:sp,"
 /* настройки - только на вкладке осциллографа: подбираются по импульсам */
 "g_shs:sc,g_set:sc&&document.getElementById('shset').checked};"
 "for(var k in v){var e=document.getElementById(k);if(e)e.style.display=v[k]?'':'none'}}"
@@ -664,9 +675,8 @@ static const char PAGE[] =
 "document.getElementById('bt').textContent=hms(j.ms/1000);"
 "document.getElementById('bc').textContent=j.cps;"
 "document.getElementById('be').textContent=j.ev;"
-"document.getElementById('rundot').className=j.run?'dot':'dot off';"
-"document.getElementById('runtxt').textContent=j.run?'идёт набор':'остановлен';"
-"document.getElementById('runchip').className=j.run?'chip':'chip warn';"
+"if(j.srun!==undefined)window.SRUN=j.srun;"
+"if(isScope())runChip(j.srun,1);else runChip(j.run,0);"
 "document.getElementById('fchip').textContent=(j.freq/1e6).toFixed(2)+' МГц';"
 /* Режим ОБЩИЙ для всего прибора, а не для вкладки: если его сменили
    из другого окна, список должен это показать, иначе страница рисует
@@ -695,6 +705,8 @@ static const char PAGE[] =
 "lvl:v.getInt32(12,true),len:v.getInt32(16,true),d:d}}"
 "function sloop(){var md=document.getElementById('md').value;"
 "if(md!='1'&&md!='3'){window.SLAST=0;setTimeout(sloop,250);return}"
+/* пауза: прибор не опрашиваем, на экране последний кадр */
+"if(window.SRUN===0&&window.LASTJ){window.SLAST=0;window.SFPS=0;setTimeout(sloop,250);return}"
 "var t0=Date.now(),Wn=+document.getElementById('zm').value||512,"
 "M=(+document.getElementById('p_trap_L').value|0)+(+document.getElementById('p_trap_G').value|0)+16;"
 "fetch('/scope?lvl='+(+document.getElementById('tl').value||30)+'&n='+(Wn+M)+'&pre='+(Math.round(Wn*0.2)+M))"
@@ -825,7 +837,8 @@ static esp_err_t h_stat(httpd_req_t *r)
         "{\"ev\":%llu,\"cps\":%lu,\"pile\":%llu,\"dead\":%llu,"
         "\"base\":%ld,\"lost\":%llu,\"over\":%llu,"
         "\"samp\":%llu,\"freq\":%lu,"
-        "\"run\":%d,\"ms\":%lu,\"mode\":%d,\"load\":%lu,\"vec\":%d}",
+        "\"run\":%d,\"ms\":%lu,\"mode\":%d,\"load\":%lu,\"vec\":%d,"
+        "\"srun\":%d,\"cap\":%d}",
         (unsigned long long)s.total_events, (unsigned long)s.cps,
         (unsigned long long)s.skipped_pileup,
         (unsigned long long)s.skipped_deadtime,
@@ -833,8 +846,10 @@ static esp_err_t h_stat(httpd_req_t *r)
         (unsigned long long)s.overflow,
         (unsigned long long)s.samples_processed,
         (unsigned long)adc_clk_get_freq(),
-        adc_cap_is_running() ? 1 : 0, (unsigned long)s.run_ms,
-        (int)mca_mode, (unsigned long)s.load_pm, mca_dsp_vec_ok() ? 1 : 0);
+        /* run - набор спектра, srun - осциллограф, cap - сам захват АЦП */
+        mca_spec_run ? 1 : 0, (unsigned long)s.run_ms,
+        (int)mca_mode, (unsigned long)s.load_pm, mca_dsp_vec_ok() ? 1 : 0,
+        mca_scope_run ? 1 : 0, adc_cap_is_running() ? 1 : 0);
     httpd_resp_set_type(r, "application/json");
     /* snprintf возвращает длину, которая ПОТРЕБОВАЛАСЬ БЫ. При нехватке
      * места это больше размера буфера, и отправка читала бы за его
@@ -933,9 +948,11 @@ static esp_err_t h_cmd(httpd_req_t *r)
     char q[64], v[16];
     if (httpd_req_get_url_query_str(r, q, sizeof(q)) == ESP_OK &&
         httpd_query_key_value(q, "do", v, sizeof(v)) == ESP_OK) {
-        if      (!strcmp(v, "start")) mca_cmd_start = true;
-        else if (!strcmp(v, "stop"))  mca_cmd_stop  = true;
-        else if (!strcmp(v, "clear")) mca_cmd_clear = true;
+        if      (!strcmp(v, "start"))       mca_spec_run  = true;
+        else if (!strcmp(v, "stop"))        mca_spec_run  = false;
+        else if (!strcmp(v, "scope_start")) mca_scope_run = true;
+        else if (!strcmp(v, "scope_stop"))  mca_scope_run = false;
+        else if (!strcmp(v, "clear"))       mca_cmd_clear = true;
     }
     return httpd_resp_sendstr(r, "ok");
 }

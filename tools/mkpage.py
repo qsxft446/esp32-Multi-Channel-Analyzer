@@ -86,7 +86,7 @@ window.fetch = function(u){
   if (u.indexOf('/spectrum') === 0) d = {d: %s};
   else if (u.indexOf('/stat') === 0) d = {ev:12345,cps:210,pile:0,dead:0,
         base:2048,lost:0,over:0,samp:9000000,freq:8000000,run:1,ms:60000,
-        mode:0};
+        mode:0,srun:1,cap:1};
   else if (u.indexOf('/cfg') === 0) d = {threshold:20,cpc:1000,nch:%d,
         algo:0,polarity:0,int_rise:20,int_fall:32,hysteresis:50,trap_L:20,trap_G:44,
         rearm:64,search:70,baseline_shift:10,

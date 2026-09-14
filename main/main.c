@@ -132,8 +132,6 @@ void app_main(void)
             continue;                /* пока подбираем - остальное ждёт */
         }
 
-        if (mca_cmd_start) { mca_cmd_start = false; capture_start(); }
-        if (mca_cmd_stop)  { mca_cmd_stop  = false; capture_stop();  }
         if (mca_cmd_clear) { mca_cmd_clear = false; mca_dsp_reset_spectrum(); }
 
         if (mca_cmd_freq_idx >= 0) {
@@ -146,6 +144,26 @@ void app_main(void)
                 mca_settings_save_freq(idx);
                 vTaskDelay(pdMS_TO_TICKS(20));
                 if (was) capture_start();
+            }
+        }
+
+        /* ЗАХВАТ ВКЛЮЧЁН ТОГДА, КОГДА ОН НУЖЕН ОТКРЫТОЙ ВКЛАДКЕ.
+         *
+         * Раньше «Старт/Стоп» запускали и останавливали сам захват, общий
+         * для всех вкладок: остановили осциллограф - встал и набор
+         * спектра, запустили осциллограф - спектр пошёл набираться после
+         * возврата на свою вкладку. Теперь у спектра и осциллографа свои
+         * признаки, а захват здесь подгоняется под открытую вкладку. В
+         * режиме осциллографа спектр не набирается (см. dsp_task), так
+         * что работающий для осциллографа захват спектр не трогает. */
+        {
+            const mca_mode_t m = mca_mode;
+            const bool scope = (m == MCA_MODE_SCOPE ||
+                                m == MCA_MODE_SCOPE_TRIG);
+            const bool want  = scope ? mca_scope_run : mca_spec_run;
+            if (want != adc_cap_is_running()) {
+                if (want) capture_start();
+                else      capture_stop();
             }
         }
 
