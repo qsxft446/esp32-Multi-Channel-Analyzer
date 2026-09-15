@@ -13,6 +13,7 @@
 #include "esp_timer.h"
 #include "mca_settings.h"
 #include "mca_web.h"
+#include "mca_emu.h"
 
 static const char *TAG = "main";
 
@@ -115,6 +116,8 @@ void app_main(void)
     ESP_ERROR_CHECK(adc_cap_init());
     ESP_ERROR_CHECK(mca_web_start());
     mca_settings_load();        /* NVS к этому моменту поднят стартом WiFi */
+    /* Эмуляция MCA на UART0, если включена: с этого места консоль молчит. */
+    mca_emu_init();
 
     xTaskCreatePinnedToCore(dsp_task, "dsp", 8192, NULL, 10, NULL, 1);
 

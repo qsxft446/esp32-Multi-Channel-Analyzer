@@ -6,6 +6,7 @@
 #include "adc_clk.h"
 #include "mca_diag.h"
 #include "mca_eth.h"
+#include "mca_emu.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -243,14 +244,20 @@ static const char PAGE[] =
 "['nch','Каналов','b','Длина шкалы вправо. Спектр не сбрасывает']]],"
 "['Отбраковка наложений',["
 "['pileup_pre_pct','Наложение до %','b','Брак, если перед пиком трапеция выше этого % амплитуды. 0 - выключено'],"
-"['pileup_post_pct','Наложение после %','b','Брак, если после пика не упала ниже этого %. Работают, только если оба больше 0']]]];"
-"var P=[];GR.forEach(function(g){g[1].forEach(function(r){if(r[0]!='fq')P.push(r[0])})});"
+"['pileup_post_pct','Наложение после %','b','Брак, если после пика не упала ниже этого %. Работают, только если оба больше 0']]],"
+"['Связь с программами на ПК',["
+"['emu','Эмуляция MCA на COM','b','Порт UART0 отвечает по протоколу shproto (BecqMoni и др.). Консоль при этом молчит']]]];"
+/* fq и emu - не параметры обработки: уходят в прибор сразу, своими запросами */
+"var P=[];GR.forEach(function(g){g[1].forEach(function(r){if(r[0]!='fq'&&r[0]!='emu')P.push(r[0])})});"
 /* пометка только у параметров одного способа; без пометки - действует всегда */
 "var BDG={t:['трапеция','t'],i:['интегрирование','i']};"
 /* поля выпадающими меню: значение и подпись */
 "var SEL={algo:[['0','трапеция'],['1','интегрирование']],"
-"nch:[['2048','2048'],['4096','4096'],['8192','8192']]};"
+"nch:[['2048','2048'],['4096','4096'],['8192','8192']],"
+"emu:[['0','выключена'],['38400','38400'],['115200','115200'],['460800','460800'],"
+"['600000','600000'],['921600','921600']]};"
 "var H={"
+"emu:'Эмуляция анализатора на последовательном порту UART0 - разъём UART/COM на плате (не встроенный USB). Прибор отвечает по бинарному протоколу shproto, и программы на ПК, умеющие работать с такими анализаторами (например, BecqMoni), видят его как MCA: набор, остановка, сброс, выгрузка спектра и статуса, калибровка. Скорость порта выбирается здесь, действует сразу и сохраняется. Пока эмуляция включена, консоль молчит: сообщения прошивки на порт не идут. Заводские команды настройки из программы не принимаются - параметры задаются на этой странице.',"
 "fq:'Частота семплирования АЦП. Выше - подробнее форма импульса, но обработка может не успевать: смотрите потерянные чанки на странице Диагностика. На 16 МГц обработка спектра занимает около 85 % ядра, на 17.14 - около 92 % (предел), на 20 МГц спектр не успевает - она для осциллографа. Гармоники CLK могут мешать WiFi: если на какой-то частоте страница начинает замирать, а пинг до прибора растёт, смените частоту или канал роутера. Параметры фильтра заданы в отсчётах, поэтому на другой частоте то же L или G - другое время.',"
 "polarity:'0 - импульсы вверх от базовой линии, 1 - вниз (например, анод ФЭУ напрямую). При 1 сигнал переворачивается ещё до обработки, и порог и спектр работают как с импульсами вверх; осциллограф синхронизируется по фронту вниз. Постоянная составляющая сигнала на обработку не влияет - её вычитает трапеция.',"
 "algo:'Трапеция: амплитуда по вершине трапеции (окно L, зазор G, по желанию среднее по плато). Интегрирование: среднее отсчётов импульса вокруг вершины за вычетом базовой линии (до и после вершины, база 2^N, окно базы). Поля, которые при выбранном способе ни на что не влияют, в таблице приглушены. Обнаружение события в обоих способах одинаковое - по выходу трапеции, поэтому L, G, порог, гистерезис, перезапуск и поиск пика нужны всегда. Масштабы способов различаются - после переключения подберите «Кодов на канал». Смена способа очищает спектр.',"
@@ -296,6 +303,7 @@ static const char PAGE[] =
 "function cpcTop(){var c=+document.getElementById('p_cpc').value,n=+document.getElementById('p_nch').value;"
 "document.getElementById('cpctop').textContent=c>0&&n?'Сейчас шкала до '+(+(c*n).toFixed(1))+' кодов.':''}"
 "document.getElementById('p_algo').onchange=showFields;"
+"document.getElementById('p_emu').onchange=setemu;"
 "document.getElementById('p_cpc').oninput=cpcTop;document.getElementById('p_nch').onchange=cpcTop;"
 "function cmd(c){fetch('/cmd?do='+c)}"
 /* Старт/Стоп относятся к открытой вкладке: на «Спектре» - набор
@@ -324,6 +332,10 @@ static const char PAGE[] =
 "function setmode(){window.MDLOCK=Date.now()+1500;"
 "fetch('/cfg?mode='+document.getElementById('md').value)}"
 "function setfreq(){fetch('/cfg?freq='+fs.value)}"
+/* эмуляция MCA на COM: включается сразу, с подтверждением - консоль замолчит */
+"function setemu(){var e=document.getElementById('p_emu'),v=e.value;"
+"if(v!='0'&&!confirm('Включить эмуляцию MCA на порту UART0, '+v+' бод? Сообщения консоли на этот порт идти перестанут.'))"
+"{e.value=window.EMU||'0';return}window.EMU=v;fetch('/cfg?emu='+v)}"
 /* «Кодов на канал» прибор хранит в тысячных: 0.5 уходит как 500 */
 "function apply(){var q=P.map(function(k){var v=document.getElementById('p_'+k).value;"
 "return k=='cpc'?'cpc='+Math.round(v*1000):k+'='+v}).join('&');fetch('/cfg?'+q)}"
@@ -712,6 +724,7 @@ static const char PAGE[] =
 "if(d<bd){bd=d;bi=k}}fs.value=bi}"
 "if(!window.pl){window.pl=1;fetch('/cfg').then(r=>r.json()).then(function(p){"
 "if(p.fl){FHZ=p.fl;fillFq()}"
+"if(p.emu!==undefined){window.EMU=String(p.emu);document.getElementById('p_emu').value=window.EMU}"
 "P.forEach(function(k){document.getElementById('p_'+k).value=k=='cpc'?p[k]/1000:p[k]});"
 "showFields();cpcTop()})}})}"
 /* ОСЦИЛЛОГРАФ опрашивается отдельно от спектра и статуса: следующий
@@ -920,6 +933,8 @@ static esp_err_t h_cfg(httpd_req_t *r)
         if (q_int(q, "mode", &v) && v >= 0 && v <= MCA_MODE_MAX)
             mca_mode = (mca_mode_t)v;
         if (q_int(q, "freq", &v)) mca_cmd_freq_idx = v;
+        /* эмуляция MCA на COM: скорость порта или 0 - выключить */
+        if (q_int(q, "emu", &v)) mca_emu_set((uint32_t)v);
 
         q_int(q, "threshold",       &p.threshold);
         q_int(q, "cpc",             &p.cpc_milli);
@@ -955,7 +970,7 @@ static esp_err_t h_cfg(httpd_req_t *r)
         "\"baseline_shift\":%ld,\"baseline_win\":%ld,"
         "\"flat_avg\":%ld,"
         "\"pileup_pre_pct\":%ld,"
-        "\"pileup_post_pct\":%ld,\"fl\":[",
+        "\"pileup_post_pct\":%ld,\"emu\":%lu,\"fl\":[",
         (long)p.threshold, (long)p.cpc_milli, (long)p.nch,
         (long)p.algo, (long)p.polarity, (long)p.int_rise, (long)p.int_fall,
         (long)p.hysteresis, (long)p.trap_L,
@@ -963,7 +978,7 @@ static esp_err_t h_cfg(httpd_req_t *r)
         (long)p.baseline_shift, (long)p.baseline_win,
         (long)p.flat_avg,
         (long)p.pileup_pre_pct,
-        (long)p.pileup_post_pct);
+        (long)p.pileup_post_pct, (unsigned long)mca_emu_baud());
     /* snprintf возвращает длину, которая ПОТРЕБОВАЛАСЬ БЫ. При нехватке
      * места это больше размера буфера, и отправка читала бы за его
      * границей. Ограничиваем после каждого шага. */
