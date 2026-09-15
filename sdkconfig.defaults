@@ -60,6 +60,11 @@ CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
 CONFIG_FREERTOS_RUN_TIME_COUNTER_TYPE_U64=y
 CONFIG_FREERTOS_RUN_TIME_STATS_USING_ESP_TIMER=y
 
+# Ethernet на WIZnet W5500 по SPI (необязательный модуль, см. mca_eth.c).
+CONFIG_ETH_ENABLED=y
+CONFIG_ETH_USE_SPI_ETHERNET=y
+CONFIG_ETH_SPI_ETHERNET_W5500=y
+
 # Привязку задачи TCP/IP к ядру 0 пробовали - стало ХУЖЕ: веб-задача
 # дольше ждёт своё ядро и дольше держит блокировку, которая нужна
 # обработке на каждом чанке. Оставляем как было, без привязки.

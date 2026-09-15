@@ -5,6 +5,7 @@
 #include "adc_cap.h"
 #include "adc_clk.h"
 #include "mca_diag.h"
+#include "mca_eth.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -131,7 +132,7 @@ static const char PAGE[] =
 "<nav id=tabs><span data-md=0 onclick=tab(0)>Спектр</span>"
 "<span data-md=1 onclick=tab(SCM)>Конфиг MCA</span>"
 "<a href=/diag>Диагностика</a>"
-"<a href=/wifi>WiFi</a><a href=/help>Справка</a></nav>"
+"<a href=/wifi>Сеть</a><a href=/help>Справка</a></nav>"
 "<select id=md hidden onchange=setmode()><option value=0><option value=1>"
 "<option value=2><option value=3></select>"
 "<div class=wrap>"
@@ -1039,6 +1040,45 @@ static esp_err_t wifi_creds_save(const char *ssid, const char *pass)
     return err;
 }
 
+/* ВЫКЛЮЧЕНИЕ WIFI (ключ "off" в той же области NVS).
+ *
+ * Прибор управляется только по сети, поэтому WiFi нельзя выключить так,
+ * чтобы к нему стало не подключиться:
+ *  - со страницы - только когда у Ethernet уже есть адрес;
+ *  - при старте с сохранённым «выключено» и нет модуля W5500 - WiFi
+ *    включается сразу;
+ *  - пока WiFi выключен, сторож следит за адресом Ethernet: 30 с без
+ *    адреса (при старте или позже) - WiFi включается (wifi_guard_task).
+ *    Сама настройка при этом остаётся: на следующем старте прибор снова
+ *    попробует работать только по Ethernet.
+ * Без WiFi пропадает и помеха от гармоник CLK АЦП в эфире (см. README). */
+static bool          s_wifi_off_cfg;     /* сохранено «выключено»      */
+static volatile bool s_wifi_on;          /* радио сейчас работает      */
+static bool          s_wifi_inited;
+
+static void wifi_off_load(void)
+{
+    nvs_handle_t h;
+    uint8_t v = 0;
+    if (nvs_open(MCA_NVS_NS, NVS_READONLY, &h) == ESP_OK) {
+        nvs_get_u8(h, "off", &v);
+        nvs_close(h);
+    }
+    s_wifi_off_cfg = v != 0;
+}
+
+static esp_err_t wifi_off_save(bool off)
+{
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(MCA_NVS_NS, NVS_READWRITE, &h);
+    if (err != ESP_OK) return err;
+    err = nvs_set_u8(h, "off", off ? 1 : 0);
+    if (err == ESP_OK) err = nvs_commit(h);
+    nvs_close(h);
+    if (err == ESP_OK) s_wifi_off_cfg = off;
+    return err;
+}
+
 /* ПОВТОРНЫЕ ПОПЫТКИ ПОДКЛЮЧЕНИЯ К РОУТЕРУ - ОТЛОЖЕННО И РЕДКО.
  *
  * Было: vTaskDelay(2000) прямо в обработчике событий и новая попытка
@@ -1058,12 +1098,13 @@ static int  s_sta_tries;
 
 static void sta_try_cb(void *arg)
 {
-    esp_wifi_connect();
+    if (s_wifi_on) esp_wifi_connect();
 }
 
 static void sta_retry_later(void)
 {
-    if (!s_sta_ssid[0] || !s_sta_timer) return;  /* сети нет - не лезем в эфир */
+    /* сети нет или WiFi выключен - не лезем в эфир */
+    if (!s_wifi_on || !s_sta_ssid[0] || !s_sta_timer) return;
     const int sec = s_sta_tries < 3 ? 10 : 60;
     if (s_sta_tries < 1000) s_sta_tries++;
     if (s_sta_tries <= 4)
@@ -1103,26 +1144,30 @@ static void wifi_apply_sta_config(void)
     esp_wifi_set_config(WIFI_IF_STA, &wc);
 }
 
-static void wifi_init(void)
+/* Создать WiFi (один раз) и запустить радио. */
+static void wifi_bring_up(void)
 {
-    esp_err_t e = nvs_flash_init();
-    if (e == ESP_ERR_NVS_NO_FREE_PAGES || e == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        nvs_flash_erase();
-        nvs_flash_init();
+    if (s_wifi_on) return;
+    if (!s_wifi_inited) {
+        esp_netif_create_default_wifi_sta();
+        esp_netif_create_default_wifi_ap();
+
+        wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+        esp_wifi_init(&cfg);
+        esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
+                                            wifi_ev, NULL, NULL);
+        esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
+                                            wifi_ev, NULL, NULL);
+
+        const esp_timer_create_args_t ta = {
+            .callback = sta_try_cb,
+            .name     = "sta_try",
+        };
+        esp_timer_create(&ta, &s_sta_timer);
+        s_wifi_inited = true;
     }
-    wifi_creds_load();
-
-    esp_netif_init();
-    esp_event_loop_create_default();
-    esp_netif_create_default_wifi_sta();
-    esp_netif_create_default_wifi_ap();
-
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    esp_wifi_init(&cfg);
-    esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
-                                        wifi_ev, NULL, NULL);
-    esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
-                                        wifi_ev, NULL, NULL);
+    s_wifi_on   = true;
+    s_sta_tries = 0;
 
     /* AP: открытый (без пароля) - прибор в лаборатории, не в поле.
      * Если нужен пароль - раскомментировать .authmode и .password ниже. */
@@ -1132,12 +1177,6 @@ static void wifi_init(void)
     ap.ap.max_connection = 4;
     ap.ap.authmode       = WIFI_AUTH_OPEN;
     ap.ap.channel        = 1;
-
-    const esp_timer_create_args_t ta = {
-        .callback = sta_try_cb,
-        .name     = "sta_try",
-    };
-    esp_timer_create(&ta, &s_sta_timer);
 
     /* Сеть роутера не задана - поднимаем ТОЛЬКО точку доступа. В режиме
      * «точка доступа + клиент» клиентская часть сканировала бы каналы,
@@ -1159,6 +1198,75 @@ static void wifi_init(void)
                  MCA_AP_SSID);
 }
 
+static void wifi_shut_down(void)
+{
+    if (!s_wifi_on) return;
+    s_wifi_on = false;
+    if (s_sta_timer) esp_timer_stop(s_sta_timer);
+    esp_wifi_stop();
+    ESP_LOGI(TAG, "WiFi выключен - прибор доступен только по Ethernet");
+}
+
+/* СТОРОЖ, пока WiFi выключен: раз в секунду смотрит, есть ли адрес у
+ * Ethernet, и после 30 с без адреса включает WiFi - иначе к прибору не
+ * подключиться. Работает и при старте, и позже (выдернули кабель,
+ * перезагрузился роутер). Сама настройка «выключено» не меняется.
+ * Своя задача, а не таймер esp_timer: запуск WiFi требует заметного
+ * стека. Завершается, как только WiFi включён. */
+#define WIFI_GUARD_S 30
+
+static void wifi_guard_task(void *arg)
+{
+    int no_ip_s = 0;
+    while (!s_wifi_on) {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        no_ip_s = mca_eth_ip() ? 0 : no_ip_s + 1;
+        if (no_ip_s >= WIFI_GUARD_S && !s_wifi_on) {
+            ESP_LOGW(TAG, "у Ethernet нет адреса %d с - включаю WiFi, чтобы "
+                          "прибор был доступен", WIFI_GUARD_S);
+            wifi_bring_up();
+        }
+    }
+    vTaskDelete(NULL);
+}
+
+/* Выключение со страницы - через полсекунды, отдельной задачей: ответ
+ * должен успеть уйти, если запрос пришёл как раз по WiFi. */
+static void wifi_off_task(void *arg)
+{
+    vTaskDelay(pdMS_TO_TICKS(500));
+    wifi_shut_down();
+    if (!s_wifi_on)
+        xTaskCreate(wifi_guard_task, "wifi_guard", 4096, NULL, 5, NULL);
+    vTaskDelete(NULL);
+}
+
+/* Сеть целиком: NVS, стек TCP/IP, Ethernet, затем решение про WiFi. */
+static void net_init(void)
+{
+    esp_err_t e = nvs_flash_init();
+    if (e == ESP_ERR_NVS_NO_FREE_PAGES || e == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        nvs_flash_erase();
+        nvs_flash_init();
+    }
+    wifi_creds_load();
+    wifi_off_load();
+
+    esp_netif_init();
+    esp_event_loop_create_default();
+
+    const bool eth = mca_eth_start() == ESP_OK;
+    if (s_wifi_off_cfg && eth) {
+        ESP_LOGI(TAG, "WiFi выключен в настройках - работаем по Ethernet");
+        xTaskCreate(wifi_guard_task, "wifi_guard", 4096, NULL, 5, NULL);
+    } else {
+        if (s_wifi_off_cfg)
+            ESP_LOGW(TAG, "WiFi выключен в настройках, но Ethernet нет - "
+                          "включаю WiFi");
+        wifi_bring_up();
+    }
+}
+
 /* ---- шапка и навигация вспомогательных страниц ---- */
 /* Та же шапка, что на главной, но без индикаторов состояния. */
 #define SUB_HEAD(TITLE) \
@@ -1170,17 +1278,20 @@ static void wifi_init(void)
 #define SUB_NAV(D, W, H) "<nav><a href=/>Спектр</a>" D W H "</nav>"
 #define N_DIAG    "<a href=/diag>Диагностика</a>"
 #define N_DIAG_ON "<span class=on>Диагностика</span>"
-#define N_WIFI    "<a href=/wifi>WiFi</a>"
-#define N_WIFI_ON "<span class=on>WiFi</span>"
+#define N_WIFI    "<a href=/wifi>Сеть</a>"
+#define N_WIFI_ON "<span class=on>Сеть</span>"
 #define N_HELP    "<a href=/help>Справка</a>"
 #define N_HELP_ON "<span class=on>Справка</span>"
 
-/* ---- страница/обработчики настройки WiFi ---- */
+/* ---- страница/обработчики настройки сети: Ethernet и WiFi ---- */
 static const char WIFI_PAGE[] =
-SUB_HEAD("WiFi") SUB_NAV(N_DIAG, N_WIFI_ON, N_HELP)
-"<div class=wrap><section class='panel pad' style=max-width:520px>"
-"<h3>Настройка WiFi прибора</h3>"
-"<div id=cur class=n style=margin-bottom:12px></div>"
+SUB_HEAD("Сеть") SUB_NAV(N_DIAG, N_WIFI_ON, N_HELP)
+"<div class=wrap><section class='panel pad' style=max-width:560px>"
+"<h3>Ethernet (W5500)</h3>"
+"<div id=eth class=n style=margin-bottom:6px>...</div>"
+"<h3 style=margin-top:18px>WiFi</h3>"
+"<div id=wst class=n style=margin-bottom:10px>...</div>"
+"<div id=woff style=margin-bottom:16px></div>"
 "<div class=lbl>Сеть (SSID)</div><input id=s style='width:100%;margin:4px 0 10px'>"
 "<div class=lbl>Пароль</div><input id=p type=password style='width:100%;margin:4px 0 12px'>"
 "<button class='btn green' onclick=go()>Сохранить и подключиться</button>"
@@ -1188,14 +1299,28 @@ SUB_HEAD("WiFi") SUB_NAV(N_DIAG, N_WIFI_ON, N_HELP)
 "подключиться, не отключая точку доступа " MCA_AP_SSID ".</p>"
 "</section></div>"
 "<script>"
-"fetch('/wifi/status').then(r=>r.json()).then(j=>{"
-"document.getElementById('cur').innerHTML="
-"'Сейчас: <b>'+j.ssid+'</b> &mdash; '+(j.connected?'подключено, IP '+j.ip:'нет связи');"
-"document.getElementById('s').value=j.ssid});"
+"function ld(){fetch('/wifi/status').then(r=>r.json()).then(function(j){"
+"var ei=j.eth_ip!='0.0.0.0';"
+"document.getElementById('eth').innerHTML=!j.eth_present?'модуль W5500 не найден':"
+"ei?'подключён: <b><a href=http://'+j.eth_ip+'/>http://'+j.eth_ip+'/</a></b>':"
+"(j.eth_link?'кабель подключён, жду адрес от роутера':'модуль найден, кабель не подключён');"
+"document.getElementById('wst').innerHTML=j.wifi_on?"
+"('включён. Сеть <b>'+j.ssid+'</b> &mdash; '+(j.connected?'подключено, IP '+j.ip:'нет связи')):"
+"'<b>выключен</b>'+(j.wifi_off_cfg?'':' (временно)');"
+"var b=document.getElementById('woff');"
+"if(!j.wifi_on)b.innerHTML='<button class=\"btn green\" onclick=wset(1)>Включить WiFi</button>';"
+"else if(ei)b.innerHTML='<button class=\"btn amber\" onclick=wset(0)>Выключить WiFi</button> "
+"<span class=n>прибор останется доступен по Ethernet: http://'+j.eth_ip+'/</span>';"
+"else b.innerHTML='<span class=n>Выключить WiFi можно, когда Ethernet получит адрес: '+"
+"'иначе к прибору будет не подключиться.</span>';"
+"var s=document.getElementById('s');if(!s.value&&document.activeElement!==s)s.value=j.ssid})}"
+"function wset(on){if(!on&&!confirm('Выключить WiFi? Прибор останется доступен только по Ethernet.'))return;"
+"fetch('/net/set?wifi='+on).then(r=>r.json()).then(function(j){alert(j.msg);ld()})}"
 "function go(){var s=document.getElementById('s').value,"
 "p=document.getElementById('p').value;"
 "fetch('/wifi/set?ssid='+encodeURIComponent(s)+'&pass='+encodeURIComponent(p))"
 ".then(()=>alert('Сохранено, подключаюсь...'))}"
+"ld();setInterval(ld,3000);"
 "</script></body></html>";
 
 static esp_err_t h_wifi_page(httpd_req_t *r)
@@ -1208,12 +1333,19 @@ static esp_err_t h_wifi_status(httpd_req_t *r)
 {
     esp_netif_t *sta = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
     esp_netif_ip_info_t ip = { 0 };
-    bool connected = sta && esp_netif_get_ip_info(sta, &ip) == ESP_OK &&
+    bool connected = s_wifi_on && sta &&
+                     esp_netif_get_ip_info(sta, &ip) == ESP_OK &&
                      ip.ip.addr != 0;
-    char buf[160];
+    const esp_ip4_addr_t eip = { .addr = mca_eth_ip() };
+    char buf[320];
     int n = snprintf(buf, sizeof(buf),
-        "{\"ssid\":\"%s\",\"connected\":%s,\"ip\":\"" IPSTR "\"}",
-        s_sta_ssid, connected ? "true" : "false", IP2STR(&ip.ip));
+        "{\"ssid\":\"%s\",\"connected\":%s,\"ip\":\"" IPSTR "\","
+        "\"wifi_on\":%s,\"wifi_off_cfg\":%s,"
+        "\"eth_present\":%s,\"eth_link\":%s,\"eth_ip\":\"" IPSTR "\"}",
+        s_sta_ssid, connected ? "true" : "false", IP2STR(&ip.ip),
+        s_wifi_on ? "true" : "false", s_wifi_off_cfg ? "true" : "false",
+        mca_eth_present() ? "true" : "false",
+        mca_eth_link_up() ? "true" : "false", IP2STR(&eip));
     httpd_resp_set_type(r, "application/json");
     /* snprintf возвращает длину, которая ПОТРЕБОВАЛАСЬ БЫ. При нехватке
      * места это больше размера буфера, и отправка читала бы за его
@@ -1257,6 +1389,12 @@ static esp_err_t h_wifi_set(httpd_req_t *r)
     strncpy(s_sta_ssid, ssid, sizeof(s_sta_ssid) - 1);
     strncpy(s_sta_pass, pass, sizeof(s_sta_pass) - 1);
     wifi_creds_save(s_sta_ssid, s_sta_pass);
+    if (!s_wifi_on) {
+        /* WiFi выключен - только запоминаем, радио не трогаем */
+        ESP_LOGI(TAG, "STA-данные сохранены (WiFi выключен): SSID='%s'",
+                 s_sta_ssid);
+        return httpd_resp_sendstr(r, "ok");
+    }
     /* сеть задана - поднимаем клиентскую часть и начинаем попытки заново */
     s_sta_tries = 0;
     if (s_sta_timer) esp_timer_stop(s_sta_timer);
@@ -1267,6 +1405,41 @@ static esp_err_t h_wifi_set(httpd_req_t *r)
 
     ESP_LOGI(TAG, "новые STA-данные сохранены: SSID='%s'", s_sta_ssid);
     return httpd_resp_sendstr(r, "ok");
+}
+
+/* Включить / выключить WiFi: /net/set?wifi=0|1. Выключить можно только
+ * при адресе у Ethernet - иначе к прибору станет не подключиться. */
+static esp_err_t h_net_set(httpd_req_t *r)
+{
+    char q[32], v[4] = { 0 }, buf[200];
+    if (httpd_req_get_url_query_str(r, q, sizeof(q)) != ESP_OK ||
+        httpd_query_key_value(q, "wifi", v, sizeof(v)) != ESP_OK)
+        return httpd_resp_send_err(r, HTTPD_400_BAD_REQUEST, "wifi=0|1");
+
+    int n;
+    if (v[0] == '0') {
+        const esp_ip4_addr_t eip = { .addr = mca_eth_ip() };
+        if (!eip.addr) {
+            n = snprintf(buf, sizeof(buf), "{\"ok\":false,\"msg\":\"У Ethernet "
+                         "нет адреса - WiFi не выключаю, иначе к прибору не "
+                         "подключиться.\"}");
+        } else if (wifi_off_save(true) != ESP_OK) {
+            n = snprintf(buf, sizeof(buf), "{\"ok\":false,\"msg\":\"Не удалось "
+                         "сохранить настройку.\"}");
+        } else {
+            xTaskCreate(wifi_off_task, "wifi_off", 3072, NULL, 5, NULL);
+            n = snprintf(buf, sizeof(buf), "{\"ok\":true,\"msg\":\"WiFi "
+                         "выключится через секунду. Прибор: http://" IPSTR
+                         "/\"}", IP2STR(&eip));
+        }
+    } else {
+        wifi_off_save(false);
+        wifi_bring_up();
+        n = snprintf(buf, sizeof(buf), "{\"ok\":true,\"msg\":\"WiFi включён.\"}");
+    }
+    httpd_resp_set_type(r, "application/json");
+    if (n > (int)sizeof(buf) - 1) n = (int)sizeof(buf) - 1;
+    return httpd_resp_send(r, buf, n);
 }
 
 
@@ -1960,7 +2133,7 @@ static esp_err_t h_logo(httpd_req_t *r)
 
 esp_err_t mca_web_start(void)
 {
-    wifi_init();
+    net_init();
 
     httpd_handle_t srv = NULL;
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
@@ -1984,6 +2157,7 @@ esp_err_t mca_web_start(void)
         { "/wifi",         HTTP_GET, h_wifi_page,   NULL },
         { "/wifi/status",  HTTP_GET, h_wifi_status, NULL },
         { "/wifi/set",     HTTP_GET, h_wifi_set,    NULL },
+        { "/net/set",      HTTP_GET, h_net_set,     NULL },
         { "/diag",         HTTP_GET, h_diag_page,   NULL },
         { "/diag/data",    HTTP_GET, h_diag_data,   NULL },
         { "/diag/set",     HTTP_GET, h_diag_set,    NULL },
