@@ -223,6 +223,22 @@ static void send_cal(void)
     send_text(b);
 }
 
+/* СКОЛЬКО КАНАЛОВ ОТДАВАТЬ - как в настройке «Каналов» (2048/4096/8192).
+ *
+ * Протокол всегда держит 8192 канала, и программы тоже: BecqMoni хранит
+ * спектр в массиве на 8192 и сама складывает по 8192/N соседних, чтобы
+ * получить N каналов из своих настроек. Прислать просто N каналов нельзя -
+ * она всё равно сложила бы их по 8192/N. Поэтому при N меньше 8192
+ * каждый наш канал растягивается на mul = 8192/N соседних, а его счёт
+ * делится между ними без остатка (сумма та же): программа с тем же N
+ * получает ровно каналы прибора. Проход по-прежнему идёт до 8192 - это
+ * нужно приёмникам, которые ждут полный проход. */
+static uint32_t out_channels(const mca_params_t *p)
+{
+    return (p->nch == 2048 || p->nch == 4096) ? (uint32_t)p->nch
+                                              : MCA_CHANNELS;
+}
+
 /* ---------------- -inf ---------------- */
 /* МЁРТВОЕ ВРЕМЯ. Программы на ПК считают его как
  *     (valid + invalid) * (RISE + FALL + 1) / F,
@@ -241,7 +257,8 @@ static void send_inf(void)
     mca_stats_t  st;
     mca_dsp_get_params(&p);
     mca_dsp_get_stats(&st);
-    const uint32_t max = (uint32_t)((uint64_t)MCA_CHANNELS *
+    /* амплитуда последнего отдаваемого канала */
+    const uint32_t max = (uint32_t)((uint64_t)out_channels(&p) *
                                     (uint32_t)p.cpc_milli / 1000);
     const uint64_t pulses = st.total_events + st.skipped_pileup + st.overflow;
     long fall = p.rearm;
@@ -273,6 +290,23 @@ static void send_sweep(void)
     mca_stats_t st;
     mca_dsp_get_stats(&st);
 
+    /* сколько каналов отдавать и во сколько раз растягивать - см.
+     * out_channels; настройку читаем один раз на проход */
+    mca_params_t p;
+    mca_dsp_get_params(&p);
+    const uint32_t nch = out_channels(&p);
+    const uint32_t mul = MCA_CHANNELS / nch;
+
+    /* События выше шкалы (каналы nch..8191) в отдаваемый спектр не
+     * попадают - считаем их отброшенными, иначе у программы не хватило бы
+     * импульсов в «всего», и мёртвое время вышло бы меньше настоящего. */
+    static uint32_t v[CHUNK_BINS];
+    uint64_t above = 0;
+    for (uint32_t c = nch; c < MCA_CHANNELS; c += CHUNK_BINS) {
+        const size_t got = mca_dsp_get_spectrum(v, c, CHUNK_BINS);
+        for (size_t i = 0; i < got; i++) above += v[i];
+    }
+
     /* Статус: время набора, загрузка, CPS, отброшенные импульсы, ширина (0).
      * Отброшенные - это ИМПУЛЬСЫ, замеченные, но не попавшие в спектр:
      * наложения и вышедшие за шкалу. Программы прибавляют их к сумме
@@ -284,16 +318,22 @@ static void send_sweep(void)
     pkt_add32(st.run_ms / 1000);
     pkt_add16((uint16_t)(st.load_pm / 10));
     pkt_add32(st.cps);
-    pkt_add32((uint32_t)(st.skipped_pileup + st.overflow));
+    pkt_add32((uint32_t)(st.skipped_pileup + st.overflow + above));
     pkt_add32(0);
     pkt_end();
 
-    static uint32_t v[CHUNK_BINS];
     for (uint32_t off = 0; off < MCA_CHANNELS && !s_stop_req; off += CHUNK_BINS) {
-        const size_t got = mca_dsp_get_spectrum(v, off, CHUNK_BINS);
+        /* 64 отдаваемых канала - это 64/mul наших, начиная с off/mul;
+         * канал c растягивается на mul соседних: по s/mul в каждый и ещё
+         * по единице в первые s%mul - сумма ровно s */
+        const size_t got = mca_dsp_get_spectrum(v, off / mul, CHUNK_BINS / mul);
         pkt_begin(CMD_HIST);
         pkt_add16((uint16_t)off);
-        for (size_t i = 0; i < CHUNK_BINS; i++) pkt_add32(i < got ? v[i] : 0);
+        for (size_t i = 0; i < CHUNK_BINS; i++) {
+            const size_t   c = i / mul, j = i % mul;
+            const uint32_t s = c < got ? v[c] : 0;
+            pkt_add32(s / mul + (j < s % mul ? 1 : 0));
+        }
         pkt_end();
         /* команды - и между пакетами спектра, см. «ответы на команды» */
         rx_poll(0);
