@@ -224,9 +224,16 @@ static void send_cal(void)
 }
 
 /* ---------------- -inf ---------------- */
-/* Мёртвое время на импульс программы на ПК считают как (RISE+FALL+1)/F.
- * У этого прибора импульс занимает окно трапеции (L) и перезапуск после
- * пика - их и отдаём как RISE и FALL. NOISE - порог, MAX - амплитуда,
+/* МЁРТВОЕ ВРЕМЯ. Программы на ПК считают его как
+ *     (valid + invalid) * (RISE + FALL + 1) / F,
+ * где valid - сумма спектра, invalid - поле статуса. Этот прибор после
+ * каждого замеченного импульса (принятого, отбракованного, за шкалой)
+ * глух на поиск вершины (search отсчётов) и перезапуск (не меньше rearm,
+ * пока трапеция не опустится ниже гистерезиса) - см. mca_dsp.c. Поэтому
+ * RISE = search, а FALL подобран так, чтобы RISE + FALL + 1 было средним
+ * числом отсчётов мёртвого времени на импульс: по замеру, если импульсов
+ * набралось достаточно, иначе нижняя граница rearm. Тогда живое время у
+ * программы совпадает с прибором. NOISE - порог, MAX - амплитуда,
  * попадающая в последний канал. */
 static void send_inf(void)
 {
@@ -236,6 +243,13 @@ static void send_inf(void)
     mca_dsp_get_stats(&st);
     const uint32_t max = (uint32_t)((uint64_t)MCA_CHANNELS *
                                     (uint32_t)p.cpc_milli / 1000);
+    const uint64_t pulses = st.total_events + st.skipped_pileup + st.overflow;
+    long fall = p.rearm;
+    if (pulses >= 100) {
+        const long avg = (long)((st.skipped_deadtime + pulses / 2) / pulses);
+        fall = avg - (long)p.search - 1;
+        if (fall < 0) fall = 0;
+    }
     static char b[480];
     snprintf(b, sizeof(b),
         "VERSION 13 RISE %ld FALL %ld NOISE %ld F %.2f MAX %lu HYST 1 "
@@ -244,7 +258,7 @@ static void send_inf(void)
         "Pfall 0 Sfall 0\r\n"
         "TC OFF TCpot OFF Tco [0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0] "
         "TP 1000 PileUp [] PileUpThr 8192",
-        (long)p.trap_L, (long)p.rearm, (long)p.threshold,
+        (long)p.search, fall, (long)p.threshold,
         (double)adc_clk_get_freq(), (unsigned long)max,
         (unsigned long)(st.run_ms / 1000));
     send_text(b);
@@ -259,12 +273,18 @@ static void send_sweep(void)
     mca_stats_t st;
     mca_dsp_get_stats(&st);
 
-    /* статус: время, загрузка, CPS, отброшенные импульсы, ширина (0) */
+    /* Статус: время набора, загрузка, CPS, отброшенные импульсы, ширина (0).
+     * Отброшенные - это ИМПУЛЬСЫ, замеченные, но не попавшие в спектр:
+     * наложения и вышедшие за шкалу. Программы прибавляют их к сумме
+     * спектра как «всего импульсов» и по ним считают мёртвое время.
+     * Раньше сюда шёл и skipped_deadtime - но это число ОТСЧЁТОВ в
+     * мёртвом времени (миллионы), а не импульсов: valid/invalid и живое
+     * время у программы выходили бессмысленными. */
     pkt_begin(CMD_STAT);
     pkt_add32(st.run_ms / 1000);
     pkt_add16((uint16_t)(st.load_pm / 10));
     pkt_add32(st.cps);
-    pkt_add32((uint32_t)(st.skipped_deadtime + st.skipped_pileup));
+    pkt_add32((uint32_t)(st.skipped_pileup + st.overflow));
     pkt_add32(0);
     pkt_end();
 
