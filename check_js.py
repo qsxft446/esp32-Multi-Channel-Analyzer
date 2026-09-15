@@ -19,8 +19,9 @@ bad=0
 for m in re.finditer(r'static const char (\w+)\[\]\s*=(.*?);\n', clean, re.S):
     name=m.group(1)
     html=''.join(re.findall(r'"((?:[^"\\]|\\.)*)"', m.group(2))).replace('\\"','"')
-    for sm in re.finditer(r'<script>(.*?)</script>', html, re.S):
-        js=sm.group(1); fn=f'/tmp/js3/{name}.js'
+    # LJS (/l.js) - сам по себе скрипт, у страниц - блоки <script>
+    for js in ([html] if name=='LJS' else re.findall(r'<script>(.*?)</script>', html, re.S)):
+        fn=f'/tmp/js3/{name}.js'
         open(fn,'w',encoding='utf-8').write(js)
         r=subprocess.run(['node','--check',fn],capture_output=True,text=True)
         ok = r.returncode==0

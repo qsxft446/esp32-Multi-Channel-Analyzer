@@ -66,6 +66,14 @@ if mc:
     html = html.replace('<link rel=stylesheet href=/s.css>',
                         '<style>' + css + '</style>')
 
+# Переключатель языка /l.js - тоже прямо в страницу (см. LJS в mca_web.c).
+ml = re.search(r'static const char LJS\[\]\s*=(.*?);\n', clean, re.S)
+if ml:
+    ljs = ''.join(re.findall(r'"((?:[^"\\]|\\.)*)"', ml.group(1)))
+    ljs = ljs.replace('\\"', '"').replace('\\\\', '\\')
+    html = html.replace('<script src=/l.js></script>',
+                        '<script>' + ljs + '</script>')
+
 # --- синтетический спектр: гауссов пик на спадающем континууме ---
 NCH, CEN, SIG = 2048, 600, 52
 spec = []

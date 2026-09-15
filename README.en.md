@@ -9,9 +9,9 @@ control and plots are served as a web page over WiFi (or Ethernet).
 
 ESP-IDF 5.4.4.
 
-> The device web interface and console messages are in Russian. Where this
-> document refers to a UI element, the Russian label is given in brackets,
-> e.g. the «Конфиг MCA» (MCA config) tab.
+> The web interface is in English or Russian: the RU / EN switch is in the
+> header, next to the ADC frequency. Firmware console messages are in
+> Russian; where this document quotes one, a translation is given in brackets.
 
 ![Spectrum](docs/spectrum.png)
 
@@ -113,10 +113,9 @@ Pins are changed in `main/mca_config.h` (`PIN_ETH_*`); the module is
 disabled there as well: `MCA_ETH_ENABLE 0`. The SPI bus runs at 20 MHz. The
 address comes from DHCP and is printed in the console:
 `Ethernet подключён: http://<ip>/` (Ethernet connected), and shown on the
-«Сеть» (Network) page.
+“Network” page.
 
-**Turning WiFi off** — «Сеть» (Network) page, «Выключить WiFi» (Turn WiFi
-off) button. Without WiFi the interference from the ADC CLK harmonics goes
+**Turning WiFi off** — “Network” page, “Turn WiFi off” button. Without WiFi the interference from the ADC CLK harmonics goes
 away too (see “CLK interference with WiFi”). So that you never lose access
 to the device:
 - WiFi can be turned off only when Ethernet already has an address — the
@@ -141,8 +140,8 @@ analyzer.
 
 - **Port** — UART0: the “UART”/COM connector of the board (USB-UART
   bridge), not the native USB. Settings `8 N 1`.
-- **Enabling** — «Конфиг MCA» (MCA config) → settings → «Эмуляция MCA на
-  COM» (MCA emulation on COM): «выключена» (off) or a baud rate
+- **Enabling** — “MCA config” → settings → “MCA emulation on COM”: “off” or
+  a baud rate
   `38400 | 115200 | 460800 | 600000 | 921600`. Takes effect immediately and
   is saved. The whole spectrum fits into one second only at 460800 and
   above.
@@ -170,14 +169,14 @@ analyzer.
 - **Dead time.** Programs compute it as
   `(spectrum sum + rejected) · (RISE + FALL + 1) / F`. After every detected
   pulse the device is blind for the peak search and the re-arm, so in the
-  `-inf` answer `RISE` = «Поиск пика» (peak search), and `FALL` is chosen
+  `-inf` answer `RISE` = “Peak search”, and `FALL` is chosen
   so that `RISE + FALL + 1` is the average number of dead-time samples per
-  pulse (measured; while there are few pulses — «Перезапуск», re-arm). The
+  pulse (measured; while there are few pulses — “Re-arm”). The
   program’s live time then matches the device. In BecqMoni the dead time is
   read only by the dead-time button in the device settings: acquire a few
   seconds with a source first, then press it; press it again after
   changing the ADC frequency or processing parameters.
-- **Channels — as set in the device «Каналов» (Channels) setting
+- **Channels — as set in the device “Channels” setting
   (2048/4096/8192).** The protocol and programs always hold 8192 channels:
   BecqMoni keeps the spectrum in an 8192-element array and itself sums
   `8192/N` adjacent channels to get the N channels from its settings.
@@ -196,25 +195,28 @@ BecqMoni (answers to commands).
 
 ## Web interface
 
-- **«Спектр» (Spectrum)** — acquisition, lin/log scale, analysis of the
+- **Language** — English or Russian, RU / EN buttons in the header next to
+  the ADC frequency. The choice is remembered in the browser; without a
+  choice the browser language is used (Russian for `ru`, otherwise English).
+- **Spectrum** — acquisition, lin/log scale, analysis of the
   selected peak (centroid, FWHM, resolution), file export: XML
   (ResultDataFile, opens in BecqMoni), CSV (channel, count), N42
   (ANSI N42.42), SPE (SpectraLine).
-- **«Конфиг MCA» (MCA config)** — oscilloscope with edge triggering (auto
+- **MCA config** — oscilloscope with edge triggering (auto
   and normal modes, time base 64–32768 samples, amplitude triggering —
-  «амплитуда от–до» (amplitude from–to): show only pulses whose height above
+  “amplitude from–to”: show only pulses whose height above
   the baseline is within the given range of ADC codes, X axis in µs or in
   samples from the trigger point), a ruler with A/B/C markers (start, peak,
   end of the pulse — copied into the integration parameters) and a table of
   all processing settings, marked with the measurement method each one
   belongs to.
-- **Start/Stop apply to the open tab:** on «Спектр» — spectrum acquisition
-  (together with «Сброс» (Reset), the status line and acquisition
+- **Start/Stop apply to the open tab:** on “Spectrum” — spectrum acquisition
+  (together with “Reset”, the status line and acquisition
   time/CPS/events; the time runs only while the spectrum is being
-  acquired), on «Конфиг MCA» — only the oscilloscope: pause holds the last
+  acquired), on “MCA config” — only the oscilloscope: pause holds the last
   frame and does not touch spectrum acquisition. The firmware turns ADC
   capture on by itself when the open tab needs it.
-- **«Диагностика» (Diagnostics)** (`/diag`) — sample stream and its real
+- **Diagnostics** (`/diag`) — sample stream and its real
   rate, per-bit statistics of the data lines, last-second profile, chunk
   loss log, data-line check.
 
@@ -252,7 +254,7 @@ plain code is used. Events are detected on the trapezoid output; the
 amplitude is taken from the trapezoid top or by integrating the samples
 around the peak minus the baseline. Pile-up rejection, dead time,
 hysteresis. The histogram has 8192 channels in PSRAM; 2048/4096/8192 are
-shown; «Кодов на канал» (codes per channel) sets the scale.
+shown; “Codes per channel” sets the scale.
 
 **Only what is open is processed:** the spectrum is not computed in
 oscilloscope mode.
@@ -493,7 +495,7 @@ pre-allocated memory.
 By default the profile is not printed to the console — only the line
 `потеряно чанков: N, при последней потере шёл /…` (chunks lost: N, the
 request in progress at the last loss was /…), and only in the second when
-losses happened. The «Диагностика» (Diagnostics) page always shows the
+losses happened. The “Diagnostics” page always shows the
 profile. To enable printing: `#define MCA_PROF_LOG 1` in
 `main/mca_config.h`. Then every second:
 
@@ -520,7 +522,7 @@ which request was being served at that moment and for how long.
 
 ## Bring-up on new hardware
 
-1. Frequency 1–2 MHz, «Конфиг MCA» (MCA config) tab, «Авто» (Auto) mode,
+1. Frequency 1–2 MHz, “MCA config” tab, “Auto” mode,
    Start. Feed something known to the input. Expect a sensible trace. If
    the data is all zeros — check the GPIO5→GPIO18 jumper and the R32–R35
    jumpers on the AD9226 board. If there are no chunks while PCLK is alive,
@@ -534,9 +536,9 @@ which request was being served at that moment and for how long.
 3. Raise the frequency step by step, checking the oscilloscope and `lost`
    in the console at each step. Watch the ping to the device: if it grows,
    it is CLK interference, not load.
-4. Spectrum: threshold above the trapezoid noise (the «шум фильтра» (filter
-   noise) line under the oscilloscope), L and G from the pulse shape,
-   «Кодов на канал» (codes per channel) so the peaks fit the scale.
+4. Spectrum: threshold above the trapezoid noise (the “filter
+   noise” line under the oscilloscope), L and G from the pulse shape,
+   “Codes per channel” so the peaks fit the scale.
 
 ## Tools (`tools/`)
 
@@ -550,3 +552,5 @@ which request was being served at that moment and for how long.
 - `emu_check.py` — checks the MCA emulation on the serial port from a PC
   (`python tools/emu_check.py COM3 600000`; `--selftest` checks the codec
   only).
+- `check_i18n.py` — checks that every label of the device pages has an
+  English pair (`python tools/check_i18n.py`).
