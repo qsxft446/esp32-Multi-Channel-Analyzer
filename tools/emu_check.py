@@ -11,7 +11,11 @@
   - ответ -cal: 40 строк по 8 hex, CRC32 строк 0..9 в строке 10,
     серийник в строке 39 (8 hex, не FFFFFFFF);
   - набор: статус (>= 10 байт) приходит ДО конца прохода по спектру,
-    проход - смещения 0, 64, ... без пропусков до 8192.
+    проход - смещения 0, 64, ... без пропусков до 8192;
+  - ответы на команды - как их ждёт BecqMoni (waitForAnswer): первый
+    текстовый пакет после команды, обрезанный по \\r, совпадает целиком:
+    "-ok" на -sto (в том числе посреди прохода по спектру - за 1 с),
+    на -sta - "-ok" или, на 38400 и 115200, строка с предупреждением.
 ВНИМАНИЕ: проверка запускает набор (-sta) и останавливает его (-sto);
 спектр не сбрасывает.
 """
@@ -123,8 +127,28 @@ def run(port, baud):
         if not cond:
             fails.append(name)
 
+    def answer(text, timeout):
+        """Как waitForAnswer в BecqMoni: ПЕРВЫЙ текстовый пакет после
+        команды, обрезанный по первому \\r. Возвращает (строка, секунд)."""
+        p.packets.clear()
+        t0 = time.time()
+        ser.write(frame(CMD_TEXT, text.encode() + b"\0"))
+        while time.time() - t0 < timeout:
+            p.feed(ser.read(4096))
+            for c, d in p.packets:
+                if c == CMD_TEXT:
+                    s = d.decode("ascii", errors="replace")
+                    return s.split("\r")[0], time.time() - t0
+        return None, timeout
+
+    slow = baud in (38400, 115200)
+    want_sta = ("Warning: silent mode forced due to low interface speed-ok"
+                if slow else "-ok")
+
     ser.reset_input_buffer()
-    cmd("-sto", 1.5)                    # тишина перед проверками
+    a, dt = answer("-sto", 1.0)
+    check("-sto: ответ -ok за 1 с (как ждёт BecqMoni)", a == "-ok", f"{a!r} за {dt:.2f} с")
+    collect(1.0)                        # тишина перед проверками
 
     texts = [d.decode(errors="replace") for c, d in cmd("-inf") if c == CMD_TEXT]
     inf = "".join(texts)
@@ -152,7 +176,18 @@ def run(port, baud):
     stt = "".join(d.decode(errors="replace") for c, d in cmd("-stt") if c == CMD_TEXT)
     check("-stt: stopped после -sto", stt.strip() == "stopped", repr(stt))
 
-    pk = cmd("-sta", 3.5)
+    a, dt = answer("-sta", 2.0 if slow else 1.0)
+    check("-sta: ответ как ждёт BecqMoni", a == want_sta, f"{a!r} за {dt:.2f} с")
+    # ответ на -sto посреди прохода по спектру - тоже за секунду
+    collect(1.3)
+    a, dt = answer("-sto", 1.0)
+    check("-sto посреди прохода: -ok за 1 с", a == "-ok", f"{a!r} за {dt:.2f} с")
+    collect(1.0 if not slow else 9.5)   # дать закончиться начатому проходу
+    a, _ = answer("-sta", 2.0 if slow else 1.0)
+    pk = [(c, d) for c, d in p.packets]
+    p.packets.clear()
+    collect(3.5 if not slow else 12.0)
+    pk += list(p.packets)
     hist = [(struct.unpack_from("<H", d)[0], (len(d) - 2) // 4)
             for c, d in pk if c == CMD_HIST]
     stat_i = [i for i, (c, d) in enumerate(pk) if c == CMD_STAT]
@@ -176,11 +211,14 @@ def run(port, baud):
     stt = "".join(d.decode(errors="replace") for c, d in cmd("-stt") if c == CMD_TEXT)
     check("-stt: collecting во время набора", "collecting" in stt, repr(stt))
 
-    cmd("-sto", 2.0)                    # дать закончиться начатому проходу
+    cmd("-sto", 2.0 if not slow else 10.0)   # дать закончиться начатому проходу
     pk = cmd("-stt", 1.5)
     check("-sto: спектр больше не идёт", not any(c == CMD_HIST for c, d in pk))
 
-    pk = cmd("-sho", 3.0)
+    a, _ = answer("-ris 8", 1.0)
+    check("заводская команда: честный отказ", a == "-err not supported", repr(a))
+
+    pk = cmd("-sho", 3.0 if not slow else 10.0)
     n = sum(1 for c, d in pk if c == CMD_HIST)
     check("-sho: ровно один проход", n == CHANNELS // 64, f"пакетов {n}")
 

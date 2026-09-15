@@ -39,10 +39,25 @@ static const char *TAG = "mca_emu";
  * статус, затем весь спектр: приёмники копят статус и применяют его в
  * момент, когда проход по спектру закончен, поэтому статус - первым.
  *
+ * ОТВЕТЫ НА КОМАНДЫ. Программы ждут подтверждение отдельным текстовым
+ * пакетом. BecqMoni после команды берёт ПЕРВЫЙ пришедший текстовый пакет,
+ * обрезает его по первому \r и сравнивает целиком: на -sto, -rst, -sta
+ * ждёт "-ok" (1 с), а на -sta при 38400 и 115200 - ровно
+ * "Warning: silent mode forced due to low interface speed-ok" (2 с). Не
+ * дождалась - «не удаётся прочитать данные из порта». Поэтому:
+ *  - на каждую выполненную команду - "-ok";
+ *  - команды разбираются и между пакетами спектра: на медленном порту
+ *    проход длится секунды, и ответ не должен ждать его конца;
+ *  - буфер передачи небольшой (1 КБ): ответ встаёт в очередь за ним, и
+ *    на 38400 это ~0.27 с, а не секунда с лишним.
+ * На 38400 и 115200 настоящий прибор не выгружает спектр каждую секунду
+ * («silent»). Здесь спектр идёт и на этих скоростях, просто медленнее:
+ * иначе программа, не опрашивающая прибор, спектра не увидела бы.
+ *
  * Заводские команды настройки (-ris, -fall, -U, -V, -nos, -hyst, -step,
- * -t..., -pileup...) не поддерживаются и молча пропускаются: программа
- * на ПК не должна сбивать настройки обработки этого прибора - они
- * задаются на его странице. */
+ * -t..., -pileup...) не выполняются, на них ответ "-err not supported":
+ * программа на ПК не должна сбивать настройки обработки этого прибора -
+ * они задаются на его странице. */
 
 #define EMU_UART        UART_NUM_0
 #define EMU_NS          "mca_cfg"
@@ -54,6 +69,11 @@ static const char *TAG = "mca_emu";
 #define N_REGS          40          /* регистры -cal            */
 #define REG_CRC         10          /* CRC32 регистров 0..9     */
 #define REG_SERIAL      39
+#define TX_RING         1024        /* см. «ответы на команды»  */
+
+#define ANSWER_OK       "-ok"
+#define ANSWER_SLOW     "Warning: silent mode forced due to low interface speed-ok"
+#define ANSWER_UNSUPP   "-err not supported"
 
 _Static_assert(MCA_CHANNELS % CHUNK_BINS == 0, "спектр не делится на пакеты");
 _Static_assert(MCA_CHANNELS <= 65535, "смещение в пакете 16-битное");
@@ -67,6 +87,9 @@ static vprintf_like_t    s_prev_vprintf;
 static uint32_t          s_regs[N_REGS];
 static bool              s_silent;        /* -sta -s: без выгрузки     */
 static uint32_t          s_limit_s;       /* -sta xx: время набора, с  */
+static bool              s_in_sweep;      /* идёт проход по спектру    */
+
+static void rx_poll(TickType_t wait);
 
 static bool baud_ok(uint32_t b)
 {
@@ -98,9 +121,10 @@ static uint32_t crc32_std(const char *s)
 }
 
 /* ---------------- передача ---------------- */
-/* худший случай: всё экранировано, плюс заголовок и хвост */
-static uint8_t  s_tx[2 * (1 + 2 + CHUNK_BINS * 4 + 2) + 8 > 1100
-                     ? 2 * (1 + 2 + CHUNK_BINS * 4 + 2) + 8 : 1100];
+/* с запасом на худший случай: всё экранировано, плюс заголовок и хвост */
+static uint8_t  s_tx[1100];
+_Static_assert(sizeof(s_tx) >= 2 * (1 + 2 + CHUNK_BINS * 4 + 2) + 8,
+               "буфер передачи мал для пакета спектра");
 static size_t   s_tx_len;
 static uint16_t s_tx_crc;
 
@@ -229,6 +253,9 @@ static void send_inf(void)
 /* ---------------- статус и спектр ---------------- */
 static void send_sweep(void)
 {
+    if (s_in_sweep) return;             /* -sho посреди прохода - он и идёт */
+    s_in_sweep = true;
+
     mca_stats_t st;
     mca_dsp_get_stats(&st);
 
@@ -242,14 +269,16 @@ static void send_sweep(void)
     pkt_end();
 
     static uint32_t v[CHUNK_BINS];
-    for (uint32_t off = 0; off < MCA_CHANNELS; off += CHUNK_BINS) {
+    for (uint32_t off = 0; off < MCA_CHANNELS && !s_stop_req; off += CHUNK_BINS) {
         const size_t got = mca_dsp_get_spectrum(v, off, CHUNK_BINS);
         pkt_begin(CMD_HIST);
         pkt_add16((uint16_t)off);
         for (size_t i = 0; i < CHUNK_BINS; i++) pkt_add32(i < got ? v[i] : 0);
         pkt_end();
-        if (s_stop_req) return;
+        /* команды - и между пакетами спектра, см. «ответы на команды» */
+        rx_poll(0);
     }
+    s_in_sweep = false;
 }
 
 /* ---------------- скорость ---------------- */
@@ -295,6 +324,9 @@ static void handle_cmd(char *s)
             if (r >= 0 && r < N_REGS) {
                 s_regs[r] = (uint32_t)strtoul(v, NULL, 16);
                 regs_save();
+                send_text(ANSWER_OK);
+            } else {
+                send_text(ANSWER_UNSUPP);
             }
         }
     } else if (!strcmp(cmd, "-sta")) {
@@ -307,21 +339,37 @@ static void handle_cmd(char *s)
         }
         mca_mode     = MCA_MODE_SPECTRUM;
         mca_spec_run = true;
+        /* так отвечает настоящий прибор на медленном порту - и именно эту
+         * строку ждёт BecqMoni на 38400 и 115200 */
+        send_text((s_baud == 38400 || s_baud == 115200) ? ANSWER_SLOW
+                                                        : ANSWER_OK);
     } else if (!strcmp(cmd, "-sto")) {
         mca_spec_run = false;
+        send_text(ANSWER_OK);
     } else if (!strcmp(cmd, "-sho")) {
         send_sweep();
     } else if (!strcmp(cmd, "-stt")) {
         send_text(mca_spec_run ? "collecting" : "stopped");
     } else if (!strcmp(cmd, "-rst")) {
         mca_cmd_clear = true;
+        send_text(ANSWER_OK);
     } else if (!strcmp(cmd, "-mode")) {
         char *a = strtok_r(NULL, " ", &save);
-        if (a && atoi(a) == 0) mca_mode = MCA_MODE_SPECTRUM;
+        if (a && atoi(a) == 0) {
+            mca_mode = MCA_MODE_SPECTRUM;
+            send_text(ANSWER_OK);
+        } else {
+            send_text(ANSWER_UNSUPP);   /* осциллограф и импульсы - нет */
+        }
     } else if (!strcmp(cmd, "-spd")) {
         char *a = strtok_r(NULL, " ", &save);
         const uint32_t b = a ? (uint32_t)strtoul(a, NULL, 10) : 0;
-        if (baud_ok(b)) baud_live(b);
+        if (baud_ok(b)) {
+            send_text(ANSWER_OK);       /* ещё на прежней скорости */
+            baud_live(b);
+        } else {
+            send_text(ANSWER_UNSUPP);
+        }
     } else if (!strcmp(cmd, "-frq")) {
         /* ближайшая большая доступная частота, как у настоящего прибора */
         char *a = strtok_r(NULL, " ", &save);
@@ -329,12 +377,20 @@ static void handle_cmd(char *s)
         int idx = MCA_FREQ_COUNT - 1;
         for (int i = 0; i < MCA_FREQ_COUNT; i++)
             if (mca_freq_table[i] >= hz) { idx = i; break; }
-        if (hz) mca_cmd_freq_idx = idx;
+        if (hz) {
+            mca_cmd_freq_idx = idx;
+            send_text(ANSWER_OK);
+        } else {
+            send_text(ANSWER_UNSUPP);
+        }
     } else if (!strcmp(cmd, "-reboot")) {
-        uart_wait_tx_done(EMU_UART, pdMS_TO_TICKS(200));
+        send_text(ANSWER_OK);
+        uart_wait_tx_done(EMU_UART, pdMS_TO_TICKS(500));
         esp_restart();
+    } else {
+        /* заводская настройка и прочее - см. в начале файла */
+        send_text(ANSWER_UNSUPP);
     }
-    /* остальное (заводская настройка) - молча, см. в начале файла */
 }
 
 /* ---------------- приём ---------------- */
@@ -350,7 +406,7 @@ static void rx_byte(uint8_t b)
         s_rx_esc = false;
         return;
     }
-    if (!s_rx_started) return;
+    if (!s_rx_started) return;          /* в т.ч. одиночный 0xFF раз в секунду */
     if (b == 0xFD) { s_rx_esc = true; return; }
     if (b == 0xA5) {                    /* конец пакета */
         s_rx_started = false;
@@ -361,7 +417,7 @@ static void rx_byte(uint8_t b)
         const uint8_t cmd = s_rx[0];
         const size_t  len = s_rx_len - 3;
         if (cmd == CMD_TEXT && len > 0) {
-            char text[sizeof(s_rx)];
+            static char text[sizeof(s_rx)];
             memcpy(text, s_rx + 1, len);
             text[len] = 0;
             handle_cmd(text);
@@ -375,14 +431,22 @@ static void rx_byte(uint8_t b)
     if (s_rx_len < sizeof(s_rx)) s_rx[s_rx_len++] = b;
 }
 
-static void emu_task(void *arg)
+/* Разобрать всё, что пришло; wait - сколько ждать первого байта. */
+static void rx_poll(TickType_t wait)
 {
     uint8_t buf[128];
+    int n;
+    while ((n = uart_read_bytes(EMU_UART, buf, sizeof(buf), wait)) > 0) {
+        for (int i = 0; i < n; i++) rx_byte(buf[i]);
+        wait = 0;
+    }
+}
+
+static void emu_task(void *arg)
+{
     int64_t next = esp_timer_get_time() + 1000000;
     while (!s_stop_req) {
-        const int n = uart_read_bytes(EMU_UART, buf, sizeof(buf),
-                                      pdMS_TO_TICKS(20));
-        for (int i = 0; i < n; i++) rx_byte(buf[i]);
+        rx_poll(pdMS_TO_TICKS(20));
 
         const int64_t now = esp_timer_get_time();
         if (now < next) continue;
@@ -415,11 +479,12 @@ static void emu_start(uint32_t baud)
     s_prev_vprintf = esp_log_set_vprintf(null_vprintf);
 
     if (!uart_is_driver_installed(EMU_UART))
-        uart_driver_install(EMU_UART, 1024, 4096, 0, NULL, 0);
+        uart_driver_install(EMU_UART, 1024, TX_RING, 0, NULL, 0);
     uart_set_baudrate(EMU_UART, baud);
     uart_flush_input(EMU_UART);
 
     s_rx_started = false;
+    s_in_sweep = false;
     s_silent  = false;
     s_limit_s = 0;
     s_stop_req = false;
