@@ -560,8 +560,12 @@ static const char PAGE[] =
    B при установке прилипает к вершине рядом со щелчком: на глаз её
    легко поставить на отсчёт мимо. */
 "var RUL=[null,null,null],RCOL=['#7ee081','#f0c45a','#ff8a82'],HOV=null,DRAG=-1,RAF=0;"
-"function scRedraw(){if(RAF||!window.LASTJ)return;"
-"RAF=requestAnimationFrame(function(){RAF=0;drawScope(window.LASTJ,window.LASTW)})}"
+/* Холст общий со спектром: осциллограф рисуем, только если он открыт -
+   и при вызове, и в момент кадра (вкладку могли сменить за это время).
+   Без этого уход курсора с холста на «Спектре» на мгновение рисовал
+   поверх спектра последний кадр осциллографа. */
+"function scRedraw(){if(RAF||!window.LASTJ||!isScope())return;"
+"RAF=requestAnimationFrame(function(){RAF=0;if(isScope())drawScope(window.LASTJ,window.LASTW)})}"
 "function rPx(i){var g=window.SCV;return 28+i*(g.W-30)/Math.max(1,g.n-1)}"
 "function rIdx(x){var g=window.SCV;"
 "return Math.max(0,Math.min(g.n-1,Math.round((x-28)*(g.n-1)/(g.W-30))))}"
@@ -611,7 +615,7 @@ static const char PAGE[] =
 "cv.addEventListener('pointermove',function(e){if(!isScope()||!window.SCV)return;"
 "var i=rIdx(e.offsetX);HOV=i;if(DRAG>=0)RUL[DRAG]=i-window.SCV.z;scRedraw()});"
 "cv.addEventListener('pointerup',function(){DRAG=-1});"
-"cv.addEventListener('pointerleave',function(){if(DRAG<0){HOV=null;scRedraw()}});"
+"cv.addEventListener('pointerleave',function(){if(DRAG<0){HOV=null;if(isScope())scRedraw()}});"
 /* Вкладки режимов и видимость управления: каждому режиму - свои поля. */
 /* Авто и ждущий - один осциллограф: вкладка одна, режим развёртки
    переключается сегментом. SCM помнит последний выбранный. Режим 2
@@ -730,7 +734,8 @@ static const char PAGE[] =
 "fetch('/scope?lvl='+(+document.getElementById('tl').value||30)+'&n='+(Wn+M)+'&pre='+(Math.round(Wn*0.2)+M)+"
 "'&amin='+(+document.getElementById('amin').value||0)+'&amax='+(+document.getElementById('amax').value||0))"
 ".then(function(r){return r.arrayBuffer()}).then(function(b){"
-"if(b.byteLength>=28)drawScope(sparse(b),md=='3');"
+/* ответ мог прийти, когда уже открыт «Спектр» - тогда не рисуем */
+"if(b.byteLength>=28&&isScope())drawScope(sparse(b),md=='3');"
 /* фактическая частота обновления, сглаженная - показывается под графиком */
 "var now=Date.now();if(window.SLAST)window.SFPS=(window.SFPS||1000/(now-window.SLAST))*0.8+200/(now-window.SLAST);"
 "window.SLAST=now})"
