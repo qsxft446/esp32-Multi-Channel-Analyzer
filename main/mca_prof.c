@@ -210,11 +210,19 @@ void mca_prof_tick_1s(void)
     s_snap.busy_pm = span > 0 ? (uint32_t)(s_work_sum_us * 1000 / span) : 0;
     s_work_sum_us = 0;
     s_busy_t0     = now;
-    s_snap.chunks      = s_chunks;
+    /* «за секунду» - пересчётом на фактическое время тика: он опаздывает,
+     * когда ядро 0 занято, и без пересчёта цифры завышались */
+    s_snap.chunks = span > 0
+        ? (uint32_t)(((uint64_t)s_chunks * 1000000ULL + (uint64_t)span / 2) /
+                     (uint64_t)span)
+        : s_chunks;
     s_snap.q_max       = s_q_max;
     s_snap.wait_max_us = s_wait_max;
     s_snap.work_max_us = s_work_max;
-    s_snap.lost_1s     = s_lost_1s;
+    s_snap.lost_1s = span > 0
+        ? (uint32_t)(((uint64_t)s_lost_1s * 1000000ULL + (uint64_t)span / 2) /
+                     (uint64_t)span)
+        : s_lost_1s;
     for (int i = 0; i < PROF_EP_CNT; i++) {
         s_snap.web_max_us[i] = s_web_max[i];
         s_snap.web_cnt[i]    = s_web_cnt[i];

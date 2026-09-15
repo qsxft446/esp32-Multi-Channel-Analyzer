@@ -125,7 +125,11 @@ void app_main(void)
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
 
-    uint32_t tick = 0;
+    /* Секундный тик - по часам, а не счётчиком «10 проходов по 100 мс»:
+     * у главной задачи самый низкий приоритет, и под нагрузкой ядра 0
+     * проходы растягиваются. Сами «в секунду» считаются по фактическому
+     * времени (см. mca_diag_tick_1s, mca_dsp_tick_1s, mca_prof_tick_1s). */
+    int64_t next_tick_us = esp_timer_get_time() + 1000000;
 
     while (1) {
         if (mca_cmd_clear) { mca_cmd_clear = false; mca_dsp_reset_spectrum(); }
@@ -163,8 +167,11 @@ void app_main(void)
             }
         }
 
-        if (++tick >= 10) {
-            tick = 0;
+        const int64_t now_us = esp_timer_get_time();
+        if (now_us >= next_tick_us) {
+            next_tick_us += 1000000;
+            if (now_us - next_tick_us > 1000000)   /* сильно отстали - не догоняем */
+                next_tick_us = now_us + 1000000;
             mca_dsp_tick_1s();
             mca_diag_tick_1s(adc_clk_get_freq());
             mca_prof_tick_1s();

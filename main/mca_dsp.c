@@ -718,8 +718,18 @@ void IRAM_ATTR mca_dsp_process(const uint16_t *data, size_t n)
 
 void mca_dsp_tick_1s(void)
 {
+    /* CPS - по фактическому времени с прошлого тика, а не на «ровно
+     * секунду»: тик из главного цикла под нагрузкой ядра 0 опаздывает, и
+     * CPS (на странице и в пакете статуса для программ на ПК) завышался. */
+    static int64_t t_cps;
+    const int64_t now_cps = esp_timer_get_time();
+    const int64_t dt = t_cps ? now_cps - t_cps : 1000000;
+    t_cps = now_cps;
+
     xSemaphoreTake(s_lock, portMAX_DELAY);
-    s_st.cps = (uint32_t)(s_st.total_events - s_last_events);
+    const uint64_t ev = s_st.total_events - s_last_events;
+    s_st.cps = (uint32_t)(dt > 0 ? (ev * 1000000ULL + (uint64_t)dt / 2) /
+                                   (uint64_t)dt : ev);
     s_last_events = s_st.total_events;
     s_st.run_ms = (uint32_t)(s_run_ns / 1000000ULL);
     s_st.chunks_lost = adc_cap_chunks_lost();

@@ -495,16 +495,28 @@ void mca_diag_feed(const uint16_t *data, size_t n, diag_scope_mode_t sm)
 
 void mca_diag_tick_1s(uint32_t expected_rate)
 {
+    /* СКОРОСТЬ - ПО ФАКТИЧЕСКОМУ ВРЕМЕНИ. Раньше прирост отсчётов делился
+     * на «ровно секунду», а тик приходит из главного цикла с самым низким
+     * приоритетом: когда ядро 0 занято (выгрузка спектра по COM, сеть),
+     * «секунда» растягивалась до 1.1-1.2 с, и скорость показывалась на
+     * 10-20 % выше настоящей - при исправном захвате. */
+    static int64_t t_prev;
+    const int64_t now = esp_timer_get_time();
+    const int64_t dt  = t_prev ? now - t_prev : 1000000;
+    t_prev = now;
+
     LOCK();
     uint64_t delta = s_d.samples_total - s_prev_samples;
     s_prev_samples = s_d.samples_total;
 
-    s_d.rate_measured = (uint32_t)delta;
+    const uint64_t rate = dt > 0
+        ? (delta * 1000000ULL + (uint64_t)dt / 2) / (uint64_t)dt : delta;
+    s_d.rate_measured = (uint32_t)rate;
     s_d.rate_expected = expected_rate;
     s_d.data_flowing  = (delta > 0);
 
     if (expected_rate > 0) {
-        int64_t err = ((int64_t)delta - (int64_t)expected_rate) * 100
+        int64_t err = ((int64_t)rate - (int64_t)expected_rate) * 100
                       / (int64_t)expected_rate;
         s_d.rate_error_pct = (int32_t)err;
     } else {
