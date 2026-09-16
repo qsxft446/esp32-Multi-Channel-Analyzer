@@ -10,6 +10,8 @@ idf_component_register(
          "mca_eth.c"
          "mca_emu.c"
          "scope_codec.c"
+         "mca_hist.c"
+         "mca_time.c"
     INCLUDE_DIRS "."
     EMBED_FILES "logo.png"
     REQUIRES driver esp_driver_gpio esp_driver_ledc esp_driver_spi

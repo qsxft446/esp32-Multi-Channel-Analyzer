@@ -30,6 +30,9 @@ bool mca_dsp_vec_ok(void);
 bool mca_dsp_polarity_neg(void);
 
 void mca_dsp_get_params(mca_params_t *out);
+/* Итог последней секунды (после mca_dsp_tick_1s) для истории CPS: событий
+ * в спектре и сколько миллисекунд шёл набор (0 - набор не шёл). */
+void mca_dsp_last_second(uint32_t *counts, uint32_t *dur_ms);
 void mca_dsp_set_params(const mca_params_t *in);
 
 size_t mca_dsp_get_spectrum(uint32_t *dst, size_t from, size_t count);

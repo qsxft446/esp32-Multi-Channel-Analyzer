@@ -14,6 +14,7 @@
 #include "mca_settings.h"
 #include "mca_web.h"
 #include "mca_emu.h"
+#include "mca_hist.h"
 
 static const char *TAG = "main";
 
@@ -116,6 +117,7 @@ void app_main(void)
 
     mca_dsp_init();
     mca_diag_init();
+    mca_hist_init();
 
     ESP_ERROR_CHECK(adc_clk_start(mca_freq_table[MCA_FREQ_DEFAULT_IDX]));
     ESP_ERROR_CHECK(adc_cap_init());
@@ -183,6 +185,12 @@ void app_main(void)
             if (now_us - next_tick_us > 1000000)   /* сильно отстали - не догоняем */
                 next_tick_us = now_us + 1000000;
             mca_dsp_tick_1s();
+            /* история CPS: секунда, в которую шёл набор спектра */
+            {
+                uint32_t cnt, dur;
+                mca_dsp_last_second(&cnt, &dur);
+                if (dur) mca_hist_push(cnt, dur);
+            }
             mca_diag_tick_1s(adc_clk_get_freq());
             mca_prof_tick_1s();
 

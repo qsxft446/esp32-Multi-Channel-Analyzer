@@ -8,6 +8,8 @@
 #include "mca_eth.h"
 #include "mca_emu.h"
 #include "scope_codec.h"
+#include "mca_hist.h"
+#include "mca_time.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -121,6 +123,11 @@ static const char CSS[] =
 /* переключатель языка в шапке и блоки справки на двух языках (см. LJS) */
 ".lng button{padding:4px 9px;font-size:11px}"
 "html[lang=en] .lr,html[lang=ru] .le{display:none}"
+/* мониторинг CPS на вкладке «Спектр» */
+".mcards{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}"
+".mcard{border:1px solid var(--bd);border-radius:8px;padding:10px 12px}"
+".mcard .big{margin:4px 0}.mcard .mut{font-size:11.5px}"
+".mtab{max-height:260px;overflow-y:auto;margin-top:10px}"
 "@media (max-width:620px){.big{font-size:20px}.big.ac,.big.w{font-size:18px}"
 "header{padding:8px 12px}.wrap{padding:12px 10px 0}.brand img{height:44px}}";
 
@@ -149,7 +156,14 @@ static const char LJS[] =
 "for(i=0;i<a.length;i++){a[i].title=a[i].getAttribute('data-en-title');a[i].removeAttribute('data-en-title')}}"
 "a=document.querySelectorAll('.lng button');"
 "for(i=0;i<a.length;i++)a[i].className=a[i].textContent.toLowerCase()==LANG?'on':''}"
-"document.addEventListener('DOMContentLoaded',i18n);";
+"document.addEventListener('DOMContentLoaded',i18n);"
+/* ЧАСЫ ПРИБОРА (mca_time.c): своих часов у него нет. Если время не от
+   SNTP и не задано или ушло больше чем на 2 с, любая открытая страница
+   отдаёт прибору время браузера; повтор раз в час. */
+"function tsync(){try{fetch('/time').then(function(r){return r.json()}).then(function(j){"
+"if(!j||j.src==1)return;var d=Date.now();if(!j.now||Math.abs(j.now-d)>2000)fetch('/time?set='+d)})"
+".catch(function(){})}catch(e){}}"
+"document.addEventListener('DOMContentLoaded',function(){tsync();setInterval(tsync,3600000)});";
 
 static const char PAGE[] =
 "<!DOCTYPE html><html lang=ru><head><meta charset=utf-8>"
@@ -251,6 +265,36 @@ static const char PAGE[] =
 "в «до / после вершины»</button>"
 "<button class='btn sm' onclick=rulClr() data-en='clear'>сбросить</button></div></section>"
 "<section class='panel pad'><div id=sc class=mono style=min-height:110px></div></section>"
+/* МОНИТОРИНГ CPS - только на вкладке «Спектр» */
+"<section class='panel pad' id=g_mon>"
+"<div class=grp style=margin-bottom:10px>"
+"<b style=color:#e8efe2 data-en='CPS monitor'>Мониторинг CPS</b>"
+"<span class=mut id=mtime style=font-size:11.5px></span><span class=ml></span>"
+"<span class=lbl title='По скольку секунд складывать отсчёты в одну точку графика' "
+"data-en-title='How many seconds of samples go into one point of the plot' data-en='averaging, s'>усреднение, с</span>"
+"<input id=mint type=number min=1 max=3600 value=10 onchange=mdraw()>"
+"<span class=lbl title='Скользящее среднее (оранжевая линия): по скольким точкам' "
+"data-en-title='Moving average (orange line): over how many points' data-en='SMA window'>окно SMA</span>"
+"<input id=msma type=number min=2 max=200 value=10 onchange=mdraw()>"
+"<button class='btn sm' onclick=mcsv() title='Точки графика файлом: время, длительность, импульсы, CPS, погрешность' "
+"data-en-title='Plot points as a file: time, duration, counts, CPS, error'>CSV</button>"
+"<button class='btn sm' onclick=mclr() data-en='clear history'>очистить историю</button></div>"
+"<div class=mcards>"
+"<div class=mcard><div class=lbl data-en='Current CPS'>Текущий CPS</div><div class='big ac' id=mc1>&mdash;</div>"
+"<div class=mut id=mc1s></div></div>"
+"<div class=mcard><div class=lbl data-en='Mean CPS (history)'>Средний CPS (история)</div><div class='big ac' id=mc2>&mdash;</div>"
+"<div class=mut id=mc2s></div></div>"
+"<div class=mcard><div class=lbl data-en='Last interval'>Последний интервал</div><div class='big ac' id=mc3>&mdash;</div>"
+"<div class=mut id=mc3s></div></div></div>"
+"<canvas id=mcv height=260 style=margin-top:10px></canvas>"
+"<div class=mut style=font-size:11px;margin-top:4px>"
+"<span style=color:#34d3c0>&#9644;</span> <span data-en='intervals'>интервалы</span> &nbsp;"
+"<span style=color:#ff8c1a>&#9644;</span> SMA &nbsp; "
+"<span data-en='wheel - zoom, drag - pan, double click - whole history (6 h)'>"
+"колесо - масштаб, перетаскивание - сдвиг, двойной щелчок - вся история (6 ч)</span></div>"
+"<div class=mtab><table><thead><tr><th data-en='Time'>Время</th><th>&Delta;t, <span data-en='s'>с</span></th>"
+"<th data-en='Counts'>Импульсы</th><th>CPS</th><th>&delta;, %</th></tr></thead><tbody id=mtb></tbody></table></div>"
+"</section>"
 "<section class='panel pad' id=g_set>"
 "<div style=overflow-x:auto><table class=ptab id=pbox></table></div>"
 "<div class=grp style=margin-top:10px><button class='btn green' onclick=apply() data-en='Apply'>Применить</button>"
@@ -758,13 +802,14 @@ static const char PAGE[] =
 "var SCM=1;"
 "function showCtl(){var m=document.getElementById('md').value,sp=(m=='0'||m=='2'),sc=!sp;"
 "cv.style.cursor=sc?'crosshair':'';cv.style.touchAction=sc?'none':'';"
-"var v={g_sp:sp,g_sc:sc,g_zm:sc,g_leg:sc,g_rul:sc,g_big:sp,bclr:sp,st:sp,"
+"var v={g_sp:sp,g_sc:sc,g_zm:sc,g_leg:sc,g_rul:sc,g_big:sp,bclr:sp,st:sp,g_mon:sp,"
 /* Настройки - на обеих вкладках: на осциллографе их подбирают по
    импульсам, на «Спектре» - меняют прямо во время набора и смотрят, как
    меняется спектр (вкладки переключают режим всего прибора, поэтому
    открыть обе сразу нельзя). Галочка общая. */
 "g_shs:1,g_set:document.getElementById('shset').checked};"
-"for(var k in v){var e=document.getElementById(k);if(e)e.style.display=v[k]?'':'none'}}"
+"for(var k in v){var e=document.getElementById(k);if(e)e.style.display=v[k]?'':'none'}"
+"if(sp)setTimeout(mdraw,0)}"
 "function hl(){var m=document.getElementById('md').value,g=(m=='3')?'1':(m=='2'?'0':m);"
 "if(m=='1'||m=='3')SCM=+m;"
 "var t=document.querySelectorAll('#tabs [data-md]');"
@@ -782,7 +827,7 @@ static const char PAGE[] =
 "hl();"
 "function poll(){"
 "var md=document.getElementById('md').value;"
-"if(md=='0'||md=='2'){fetch('/spectrum').then(r=>r.json()).then(function(j){"
+"if(md=='0'||md=='2'){mload();fetch('/spectrum').then(r=>r.json()).then(function(j){"
 "draw(j.d,document.getElementById('lg').checked);"
 "var a=j.d,mx=0,tot=0,pk=0;"
 "for(var i=0;i<a.length;i++){tot+=a[i];if(a[i]>mx){mx=a[i];pk=i}}"
@@ -816,6 +861,10 @@ static const char PAGE[] =
 "document.getElementById('bt').textContent=hms(j.ms/1000);"
 "document.getElementById('bc').textContent=j.cps;"
 "document.getElementById('be').textContent=j.ev;"
+/* часы прибора - в заголовке мониторинга */
+"var mt=document.getElementById('mtime');if(mt&&j.tsrc!==undefined){var dd=new Date(j.tnow);"
+"mt.textContent=L('время прибора ','device time ')+(j.tnow?p2(dd.getHours())+':'+p2(dd.getMinutes())+':'+"
+"p2(dd.getSeconds()):L('не задано','not set'))+(j.tsrc==1?' (SNTP)':j.tsrc==2?L(' (от браузера)',' (from browser)'):'')}"
 "if(!(window.RLOCK>Date.now())){if(j.srun!==undefined)window.SRUN=j.srun;"
 "if(isScope())runChip(j.srun,1);else runChip(j.run,0)}"
 "document.getElementById('fchip').textContent=(j.freq/1e6).toFixed(2)+L(' МГц',' MHz');"
@@ -912,6 +961,121 @@ static const char PAGE[] =
 "fetch('/scope?'+scq()).then(function(r){return r.arrayBuffer()}).then(function(b){"
 "if(b.byteLength>=28)sframe(sparse(b),md,b.byteLength)})"
 ".catch(function(){}).then(function(){setTimeout(sloop,Math.max(10,SPER-(Date.now()-t0)))})}"
+/* МОНИТОРИНГ CPS. Прибор копит односекундные отсчёты набора (кольцо 6 ч
+   в PSRAM, mca_hist.c), страница раз в секунду дочитывает новые
+   (/hist?from=номер) и сама складывает их в интервалы. Время отсчёта -
+   по часам браузера: сейчас минус его возраст по часам прибора, так что
+   для графика часы прибора не обязательны. CPS интервала - импульсы,
+   делённые на время, пока реально шёл набор. */
+"function p2(x){return (x<10?'0':'')+x}"
+"var MH={ep:-1,nx:0,t:[],c:[],d:[],busy:0,bn:0,B:null},MV={cnt:0,end:0,s:0,c:0,pw:1,x0:0,hx:null};"
+"function mload(){if(MH.busy)return;MH.busy=1;"
+"fetch('/hist?from='+MH.nx).then(function(r){return r.arrayBuffer()}).then(function(b){MH.busy=0;"
+"if(b.byteLength<28)return;var v=new DataView(b),ep=v.getUint32(0,true),fs=v.getUint32(4,true),"
+"nx=v.getUint32(8,true),nds=v.getUint32(12,true),n=v.getUint32(16,true),now=Date.now();"
+"if(ep!==MH.ep){MH.ep=ep;MH.t=[];MH.c=[];MH.d=[];MV.cnt=0;MV.end=0}"
+"for(var i=0;i<n&&38+10*i<=b.byteLength;i++){var o=28+10*i;"
+"MH.t.push(now-(nds-v.getUint32(o,true))*100);MH.c.push(v.getUint32(o+4,true));MH.d.push(v.getUint16(o+8,true))}"
+"var ex=MH.t.length-21600;if(ex>0){MH.t.splice(0,ex);MH.c.splice(0,ex);MH.d.splice(0,ex)}"
+"MH.nx=fs+n;if(MH.nx<nx)mload();else mdraw()}).catch(function(){MH.busy=0})}"
+/* Интервалы по step мс, выровненные по часам; отдаются только законченные
+   (конец не позже последнего отсчёта). T - время конца отсчёта. */
+"function mbuck(T,C,D,step){var o={t:[],c:[],d:[]},k=-1,cur=NaN,n=T.length;if(!n)return o;"
+"var last=T[n-1];for(var i=0;i<n;i++){var b=Math.floor(T[i]/step)*step;if(b+step>last+500)break;"
+"if(b!==cur){cur=b;o.t.push(b);o.c.push(0);o.d.push(0);k++}o.c[k]+=C[i];o.d[k]+=D[i]}return o}"
+"function mrel(c){return c>0?(100/Math.sqrt(c)).toFixed(2):'—'}"
+"function mcard(id,v,s){document.getElementById(id).textContent=v==null?'—':v.toFixed(1);"
+"document.getElementById(id+'s').textContent=s}"
+"function mdraw(){var gm=document.getElementById('g_mon');if(!gm||gm.style.display=='none')return;"
+"var st=Math.max(1,+document.getElementById('mint').value|0)*1000,B=mbuck(MH.t,MH.c,MH.d,st),"
+"n=MH.t.length,N=B.t.length;MH.bn=N;MH.B=B;"
+"var ct=0,dt=0;for(var i=0;i<n;i++){ct+=MH.c[i];dt+=MH.d[i]}"
+"mcard('mc1',n&&MH.d[n-1]?MH.c[n-1]*1000/MH.d[n-1]:null,L('за последнюю секунду набора','over the last second of acquisition'));"
+"mcard('mc2',dt?ct*1000/dt:null,dt?'δ '+mrel(ct)+' % · '+ct+L(' имп. за ',' counts in ')+hms(dt/1000):"
+"L('история копится, пока идёт набор спектра','history accumulates while the spectrum is acquired'));"
+"var lb=N-1;mcard('mc3',N&&B.d[lb]?B.c[lb]*1000/B.d[lb]:null,"
+"N?'δ '+mrel(B.c[lb])+' % · '+B.c[lb]+L(' имп. за ',' counts in ')+(B.d[lb]/1000).toFixed(1)+L(' с',' s'):'');"
+"mchart();"
+"var h='';for(var i=N-1;i>=Math.max(0,N-100);i--){var d=new Date(B.t[i]);"
+"h+='<tr><td>'+p2(d.getHours())+':'+p2(d.getMinutes())+':'+p2(d.getSeconds())+'</td><td>'+(B.d[i]/1000).toFixed(1)+"
+"'</td><td>'+B.c[i]+'</td><td>'+(B.d[i]?(B.c[i]*1000/B.d[i]).toFixed(1):'—')+'</td><td>'+mrel(B.c[i])+'</td></tr>'}"
+"document.getElementById('mtb').innerHTML=h}"
+/* График: интервалы (с разрывом, где набора не было) и скользящее
+   среднее. Видимое окно - MV.cnt интервалов, кончая MV.end (0 - всё и до
+   конца); ось X - настоящее время. */
+"function mchart(){var B=MH.B,c2=document.getElementById('mcv');if(!B||!c2)return;"
+"var g=c2.getContext('2d'),W=c2.width=c2.clientWidth,H=c2.height,N=B.t.length,x0=58,x1=W-10,y0=10,y1=H-22;"
+"g.clearRect(0,0,W,H);g.strokeStyle='#283024';g.lineWidth=1;g.strokeRect(x0+.5,y0+.5,x1-x0,y1-y0);"
+"g.font='11px ui-monospace,monospace';"
+"if(N<1){g.fillStyle='#6b756a';g.fillText(L('нет данных: история копится, пока идёт набор спектра',"
+"'no data: history accumulates while the spectrum is acquired'),x0+10,y0+24);return}"
+"var Y=[],S=[],a=0,w=Math.min(200,Math.max(2,+document.getElementById('msma').value|0));"
+"for(var i=0;i<N;i++){Y.push(B.d[i]>0?B.c[i]*1000/B.d[i]:0);a+=Y[i];if(i>=w)a-=Y[i-w];S.push(a/Math.min(i+1,w))}"
+"var cnt=MV.cnt?Math.min(Math.max(2,MV.cnt),N):N,e=MV.end?Math.min(Math.max(cnt,MV.end),N):N,s=Math.max(0,e-cnt);"
+"MV.s=s;MV.c=e-s;MV.pw=x1-x0;MV.x0=x0;"
+"var mn=1e30,mx=-1e30;for(var i=s;i<e;i++){mn=Math.min(mn,Y[i],S[i]);mx=Math.max(mx,Y[i],S[i])}"
+"if(mx-mn<1e-9)mx=mn+1;var pd=(mx-mn)*0.08;mn-=pd;mx+=pd;"
+"var t0=B.t[s],tN=B.t[e-1],sp=Math.max(1,tN-t0),stp=Math.max(1,+document.getElementById('mint').value|0)*1000;"
+"function X(t){return e-s>1?x0+(x1-x0)*(t-t0)/sp:(x0+x1)/2}"
+"function Yp(v){return y1-(y1-y0)*(v-mn)/(mx-mn)}"
+"g.textBaseline='middle';g.textAlign='right';"
+"for(var k=0;k<=4;k++){var vv=mn+(mx-mn)*k/4,yy=Yp(vv);g.strokeStyle='rgba(255,255,255,.05)';g.beginPath();"
+"g.moveTo(x0,yy);g.lineTo(x1,yy);g.stroke();g.fillStyle='#6b756a';g.fillText(vv>=100?vv.toFixed(0):vv.toFixed(1),x0-6,yy)}"
+/* подписи времени: круглый шаг, по местному времени браузера */
+"var TS=[1,2,5,10,15,30,60,120,300,600,900,1800,3600,7200,10800,21600],ts=TS[TS.length-1]*1000;"
+"for(var k=0;k<TS.length;k++)if(TS[k]*1000>=sp/6){ts=TS[k]*1000;break}"
+"var tz=new Date().getTimezoneOffset()*60000;g.textAlign='center';g.textBaseline='top';"
+"for(var t=Math.ceil((t0-tz)/ts)*ts+tz;t<=tN;t+=ts){var xx=X(t),dd=new Date(t);"
+"g.strokeStyle='rgba(255,255,255,.04)';g.beginPath();g.moveTo(xx,y0);g.lineTo(xx,y1);g.stroke();g.fillStyle='#6b756a';"
+"g.fillText(p2(dd.getHours())+':'+p2(dd.getMinutes())+(ts<60000?':'+p2(dd.getSeconds()):''),xx,y1+5)}"
+"g.strokeStyle='#34d3c0';g.lineWidth=1.4;g.beginPath();"
+"for(var i=s;i<e;i++){var xx=X(B.t[i]),yy=Yp(Y[i]);"
+"if(i>s&&B.t[i]-B.t[i-1]<=1.5*stp)g.lineTo(xx,yy);else g.moveTo(xx,yy)}g.stroke();"
+"if(e-s<=300){g.fillStyle='#34d3c0';for(var i=s;i<e;i++){g.beginPath();g.arc(X(B.t[i]),Yp(Y[i]),2,0,6.3);g.fill()}}"
+"g.strokeStyle='#ff8c1a';g.lineWidth=2;g.beginPath();"
+"for(var i=s;i<e;i++){var xx=X(B.t[i]),yy=Yp(S[i]);"
+"if(i>s&&B.t[i]-B.t[i-1]<=1.5*stp)g.lineTo(xx,yy);else g.moveTo(xx,yy)}g.stroke();"
+"g.textAlign='left';g.textBaseline='middle';"
+"if(MV.cnt){g.fillStyle='#6b756a';g.fillText(L('масштаб x','zoom x')+(N/(e-s)).toFixed(1),x0+6,y1-10)}"
+/* подсказка под курсором: ближайший интервал */
+"if(MV.hx!=null&&MV.hx>=x0&&MV.hx<=x1){var tt=t0+(MV.hx-x0)/(x1-x0)*sp,bi=s;"
+"for(var i=s;i<e;i++)if(Math.abs(B.t[i]-tt)<Math.abs(B.t[bi]-tt))bi=i;"
+"var xx=X(B.t[bi]),dd=new Date(B.t[bi]);g.strokeStyle='rgba(230,236,226,.35)';g.lineWidth=1;g.beginPath();"
+"g.moveTo(xx,y0);g.lineTo(xx,y1);g.stroke();"
+"var tx=p2(dd.getHours())+':'+p2(dd.getMinutes())+':'+p2(dd.getSeconds())+'  '+Y[bi].toFixed(1)+' cps  SMA '+"
+"S[bi].toFixed(1)+'  δ '+mrel(B.c[bi])+' %';"
+"var tw=g.measureText(tx).width+10,bx=Math.min(xx+8,x1-tw);g.fillStyle='rgba(12,16,12,.9)';g.fillRect(bx,y0+4,tw,18);"
+"g.fillStyle='#e6ece2';g.fillText(tx,bx+5,y0+13)}}"
+/* колесо - масштаб вокруг курсора, перетаскивание - сдвиг по времени,
+   двойной щелчок - вся история */
+"(function(){var c2=document.getElementById('mcv'),dr=0,dx=0,de=0;"
+"c2.addEventListener('wheel',function(ev){var N=MH.bn;if(N<2)return;ev.preventDefault();"
+"var cnt=MV.c||N,fr=Math.min(1,Math.max(0,(ev.offsetX-MV.x0)/MV.pw)),an=MV.s+fr*(cnt-1),"
+"nc=Math.min(N,Math.max(2,Math.round(cnt*(ev.deltaY<0?0.8:1.25))));"
+"if(nc>=N){MV.cnt=0;MV.end=0}else{var ne=Math.round(an+(1-fr)*(nc-1))+1;MV.cnt=nc;MV.end=ne>=N?0:Math.max(nc,ne)}"
+"mchart()},{passive:false});"
+"c2.addEventListener('mousedown',function(ev){dr=1;dx=ev.clientX;de=MV.end||MH.bn});"
+"window.addEventListener('mousemove',function(ev){if(!dr)return;var N=MH.bn,cnt=MV.c||N;"
+"var ne=Math.min(N,Math.max(cnt,Math.round(de-(ev.clientX-dx)/MV.pw*cnt)));"
+"MV.cnt=cnt<N?cnt:0;MV.end=ne>=N?0:ne;mchart()});"
+"window.addEventListener('mouseup',function(){dr=0});"
+"c2.addEventListener('mousemove',function(ev){MV.hx=ev.offsetX;if(!dr)mchart()});"
+"c2.addEventListener('mouseleave',function(){MV.hx=null;mchart()});"
+"c2.addEventListener('dblclick',function(){MV.cnt=0;MV.end=0;mchart()})})();"
+/* выгрузка точек графика файлом */
+"function mcsv(){var st=Math.max(1,+document.getElementById('mint').value|0)*1000,B=mbuck(MH.t,MH.c,MH.d,st);"
+"if(!B.t.length){alert(L('Нет данных','No data'));return}"
+"var s='time,dt_s,counts,cps,rel_err_pct\\r\\n';"
+"for(var i=0;i<B.t.length;i++){var d=new Date(B.t[i]),z=-d.getTimezoneOffset();"
+"s+=d.getFullYear()+'-'+p2(d.getMonth()+1)+'-'+p2(d.getDate())+'T'+p2(d.getHours())+':'+p2(d.getMinutes())+':'+"
+"p2(d.getSeconds())+(z>=0?'+':'-')+p2(Math.floor(Math.abs(z)/60))+':'+p2(Math.abs(z)%60)+','+(B.d[i]/1000).toFixed(3)+','+"
+"B.c[i]+','+(B.d[i]?(B.c[i]*1000/B.d[i]).toFixed(3):'')+','+(B.c[i]?(100/Math.sqrt(B.c[i])).toFixed(3):'')+'\\r\\n'}"
+"var a=document.createElement('a'),n=new Date();a.href=URL.createObjectURL(new Blob([s],{type:'text/csv'}));"
+"a.download='mca_cps_'+n.getFullYear()+p2(n.getMonth()+1)+p2(n.getDate())+'_'+p2(n.getHours())+p2(n.getMinutes())+"
+"p2(n.getSeconds())+'.csv';document.body.appendChild(a);a.click();"
+"setTimeout(function(){URL.revokeObjectURL(a.href);a.remove()},1000)}"
+"function mclr(){if(!confirm(L('Очистить историю CPS на приборе?','Clear the CPS history on the device?')))return;"
+"fetch('/hist?clear=1').then(function(){mload()})}"
 "setInterval(poll,1000);poll();wsOpen();sloop();"
 "</script></body></html>";
 
@@ -1050,7 +1214,7 @@ static esp_err_t h_stat(httpd_req_t *r)
         "\"base\":%ld,\"lost\":%llu,\"over\":%llu,"
         "\"samp\":%llu,\"freq\":%lu,"
         "\"run\":%d,\"ms\":%lu,\"mode\":%d,\"load\":%lu,\"vec\":%d,"
-        "\"srun\":%d,\"cap\":%d}",
+        "\"srun\":%d,\"cap\":%d,\"tnow\":%lld,\"tsrc\":%d}",
         (unsigned long long)s.total_events, (unsigned long)s.cps,
         (unsigned long long)s.skipped_pileup,
         (unsigned long long)s.skipped_deadtime,
@@ -1061,7 +1225,9 @@ static esp_err_t h_stat(httpd_req_t *r)
         /* run - набор спектра, srun - осциллограф, cap - сам захват АЦП */
         mca_spec_run ? 1 : 0, (unsigned long)s.run_ms,
         (int)mca_mode, (unsigned long)s.load_pm, mca_dsp_vec_ok() ? 1 : 0,
-        mca_scope_run ? 1 : 0, adc_cap_is_running() ? 1 : 0);
+        mca_scope_run ? 1 : 0, adc_cap_is_running() ? 1 : 0,
+        /* часы прибора: мс Unix-времени (0 - не заданы) и откуда время */
+        (long long)mca_time_now_ms(), (int)mca_time_source());
     httpd_resp_set_type(r, "application/json");
     /* snprintf возвращает длину, которая ПОТРЕБОВАЛАСЬ БЫ. При нехватке
      * места это больше размера буфера, и отправка читала бы за его
@@ -1169,6 +1335,55 @@ static esp_err_t h_cmd(httpd_req_t *r)
         else if (!strcmp(v, "clear"))       mca_cmd_clear = true;
     }
     return httpd_resp_sendstr(r, "ok");
+}
+
+/* /time - часы прибора: {"now": мс Unix-времени (0 - не заданы),
+ * "src": 0 - нет, 1 - SNTP, 2 - от браузера}; /time?set=<мс> - время от
+ * браузера (принимается, если оно не от SNTP, см. mca_time.h). */
+static esp_err_t h_time(httpd_req_t *r)
+{
+    char q[48], v[24];
+    if (httpd_req_get_url_query_str(r, q, sizeof(q)) == ESP_OK &&
+        httpd_query_key_value(q, "set", v, sizeof(v)) == ESP_OK)
+        mca_time_set_ms(strtoll(v, NULL, 10));
+    char buf[64];
+    int n = snprintf(buf, sizeof(buf), "{\"now\":%lld,\"src\":%d}",
+                     (long long)mca_time_now_ms(), (int)mca_time_source());
+    if (n > (int)sizeof(buf) - 1) n = (int)sizeof(buf) - 1;
+    httpd_resp_set_type(r, "application/json");
+    return httpd_resp_send(r, buf, n);
+}
+
+/* /hist?from=N - история CPS (mca_hist.h), двоичная, little-endian:
+ * 7 x uint32 (эпоха, номер первого отданного отсчёта, номер следующего,
+ * время прибора с включения в 0.1 с, сколько отдано, длина кольца,
+ * резерв), затем отсчёты по 10 байт. Не больше 1024 за раз - страница
+ * дочитывает, пока не догонит. /hist?clear=1 - очистить историю. */
+static esp_err_t h_hist(httpd_req_t *r)
+{
+    char q[48], v[16];
+    uint32_t from = 0;
+    if (httpd_req_get_url_query_str(r, q, sizeof(q)) == ESP_OK) {
+        if (httpd_query_key_value(q, "clear", v, sizeof(v)) == ESP_OK)
+            mca_hist_clear();
+        if (httpd_query_key_value(q, "from", v, sizeof(v)) == ESP_OK)
+            from = (uint32_t)strtoul(v, NULL, 10);
+    }
+    /* веб-сервер обрабатывает запросы по одному - общий буфер безопасен */
+    static mca_hist_sample_t buf[1024];
+    uint32_t first = 0, next = 0, epoch = 0;
+    const size_t n = mca_hist_copy(from, buf, 1024, &first, &next, &epoch);
+    const uint32_t h[7] = { epoch, first, next,
+                            (uint32_t)(esp_timer_get_time() / 100000),
+                            (uint32_t)n, MCA_HIST_LEN, 0 };
+    httpd_resp_set_type(r, "application/octet-stream");
+    httpd_resp_set_hdr(r, "Cache-Control", "no-store");
+    esp_err_t e = httpd_resp_send_chunk(r, (const char *)h, sizeof(h));
+    if (e == ESP_OK && n)
+        e = httpd_resp_send_chunk(r, (const char *)buf,
+                                  n * sizeof(mca_hist_sample_t));
+    if (e == ESP_OK) e = httpd_resp_send_chunk(r, NULL, 0);
+    return e;
 }
 
 /* ---------------- ОСЦИЛЛОГРАФ ПО WEBSOCKET ----------------
@@ -1593,6 +1808,8 @@ static void net_init(void)
                           "включаю WiFi");
         wifi_bring_up();
     }
+    /* часы прибора: SNTP, когда появится выход в интернет */
+    mca_time_init();
 }
 
 /* ---- шапка и навигация вспомогательных страниц ---- */
@@ -2169,7 +2386,13 @@ SUB_HEAD("Справка", "Help") SUB_NAV(N_DIAG, N_WIFI, N_HELP_ON)
 "&mdash; та же таблица параметров обработки, что на «Конфиг MCA»: их можно "
 "менять прямо во время набора и смотреть, как меняется спектр. Смена "
 "«Кодов на канал» и способа измерения очищает спектр, смена L, G и "
-"полярности перезапускает фильтр.</td></tr>"
+"полярности перезапускает фильтр. Ниже &mdash; мониторинг CPS: история за "
+"6 часов по секунде хранится в приборе и копится, пока идёт набор, даже при "
+"закрытой странице; график складывает её в интервалы «усреднение, с» и рисует "
+"скользящее среднее (колесо &mdash; масштаб, перетаскивание &mdash; сдвиг, "
+"двойной щелчок &mdash; вся история). CPS интервала &mdash; импульсы, делённые "
+"на время, пока реально шёл набор; &delta; &mdash; статистическая погрешность "
+"1/&radic;N. Время прибора берётся по SNTP или от браузера.</td></tr>"
 "<tr><td>Конфиг MCA</td><td>Осциллограф и настройки обработки. Сырые отсчёты с синхронизацией "
 "по фронту: как только сигнал вырос за 8 отсчётов не меньше чем на "
 "«синхр. по фронту», момент срабатывания ставится на пятую часть "
@@ -2320,7 +2543,14 @@ SUB_HEAD("Справка", "Help") SUB_NAV(N_DIAG, N_WIFI, N_HELP_ON)
 "“settings” checkbox is the same processing parameter table as on “MCA "
 "config”: the parameters can be changed right during acquisition to see how "
 "the spectrum changes. Changing “Codes per channel” or the method clears the "
-"spectrum, changing L, G or polarity restarts the filter.</td></tr>"
+"spectrum, changing L, G or polarity restarts the filter. Below is the CPS "
+"monitor: a 6-hour history at one sample per second is kept in the device and "
+"accumulates while the spectrum is acquired, even with the page closed; the "
+"plot sums it into “averaging, s” intervals and draws a moving average (wheel "
+"&mdash; zoom, drag &mdash; pan, double click &mdash; whole history). The CPS "
+"of an interval is the counts divided by the time acquisition actually ran; "
+"&delta; is the statistical error 1/&radic;N. The device time comes from SNTP "
+"or from the browser.</td></tr>"
 "<tr><td>MCA config</td><td>Oscilloscope and processing settings. Raw samples with "
 "edge triggering: as soon as the signal rises by at least “trigger on edge” within "
 "8 samples, the trigger point is placed at one fifth of the screen (blue mark), and "
@@ -2421,6 +2651,11 @@ static bool exp_snap(httpd_req_t *r, exp_snap_t *s)
             t = atoll(v);
         if (httpd_query_key_value(q, "tz", v, sizeof(v)) == ESP_OK)
             tz = atoi(v);
+    }
+    /* страница не прислала время - берём часы прибора (UTC), если заданы */
+    if (t <= 1500000000LL && mca_time_now_ms()) {
+        t  = mca_time_now_ms() / 1000;
+        tz = 0;
     }
     s->tvalid = t > 1500000000LL;
     /* местное время считаем как UTC со сдвигом пояса - так не нужна
@@ -2700,6 +2935,8 @@ esp_err_t mca_web_start(void)
         URI("/diag/set", h_diag_set, NULL),
         URI("/diag/probe", h_diag_probe, NULL),
         URI("/help", h_help, NULL),
+        URI("/time", h_time, NULL),
+        URI("/hist", h_hist, NULL),
         URI("/export.xml", h_export, (void *)"xml"),
         URI("/export.csv", h_export, (void *)"csv"),
         URI("/export.n42", h_export, (void *)"n42"),

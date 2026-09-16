@@ -94,6 +94,11 @@ static uint64_t s_busy_cyc;              /* тактов обработки с �
 /* Такты по этапам с замера (под LOCK): копия чанка, разность трапеции,
  * порог и события - и сколько отсчётов на них пришлось. */
 static uint64_t s_cyc_acc[3], s_cyc_n;
+/* Последняя секунда для истории CPS (под LOCK): событий и сколько
+ * миллисекунд шёл набор. Миллисекунды - разностью округлённых вниз
+ * накопленных, чтобы усечение не копилось. */
+static uint32_t s_sec_counts, s_sec_dur_ms;
+static uint64_t s_prev_run_ms;
 static int64_t  s_load_t_us;             /* когда был прошлый замер      */
 
 /* --- автомат детектора --- */
@@ -795,6 +800,15 @@ void mca_dsp_tick_1s(void)
                                    (uint64_t)dt : ev);
     s_last_events = s_st.total_events;
     s_st.run_ms = (uint32_t)(s_run_ns / 1000000ULL);
+    /* После «Сброса» счётчики начались с нуля: ev - уже события с
+     * очистки, а время набора - тоже с нуля. */
+    {
+        const uint64_t rms = s_run_ns / 1000000ULL;
+        const uint64_t d = rms >= s_prev_run_ms ? rms - s_prev_run_ms : rms;
+        s_prev_run_ms = rms;
+        s_sec_counts  = (uint32_t)ev;
+        s_sec_dur_ms  = (uint32_t)d;
+    }
     s_st.chunks_lost = adc_cap_chunks_lost();
     /* Загрузка = доля тактов ядра, ушедших на обработку, за время с
      * прошлого замера. Близко к 100% - обработка не успевает, пойдут
@@ -812,6 +826,14 @@ void mca_dsp_tick_1s(void)
         s_cyc_acc[i] = 0;
     }
     s_cyc_n = 0;
+    UNLOCK();
+}
+
+void mca_dsp_last_second(uint32_t *counts, uint32_t *dur_ms)
+{
+    LOCK();
+    *counts = s_sec_counts;
+    *dur_ms = s_sec_dur_ms;
     UNLOCK();
 }
 

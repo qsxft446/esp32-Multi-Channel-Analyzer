@@ -492,6 +492,81 @@ console.log(JSON.stringify(res));"""
         check("wdec страницы расшифровывает кадры прошивки бит в бит",
               not bad, f"расхождения: {bad}")
 
+# ------------------------------------------------------------------ L10
+print("\n=== УРОВЕНЬ 10: мониторинг CPS - интервалы ===")
+print("  Страница (mbuck в mca_web.c) складывает односекундные отсчёты прибора")
+print("  в интервалы по часам. Сверка с независимым расчётом здесь: на")
+print("  разрывах, при дрожании тика и незаконченном последнем интервале.\n")
+
+
+def mbuck_ref(T, C, D, step):
+    """законченные интервалы [b, b+step): сумма импульсов и времени набора"""
+    if not T:
+        return [], [], []
+    last = T[-1]
+    acc = {}
+    for t, c, d in zip(T, C, D):
+        b = (t // step) * step
+        if b + step > last + 500:
+            continue
+        s = acc.setdefault(b, [0, 0])
+        s[0] += c
+        s[1] += d
+    keys = sorted(acc)
+    return keys, [acc[k][0] for k in keys], [acc[k][1] for k in keys]
+
+
+r10 = random.Random(10)
+T10, C10, D10, t = [], [], [], 1_700_000_000_000
+for i in range(9000):
+    t += 1000 + r10.randint(-40, 40)          # тик главного цикла гуляет
+    if i in (2000, 5000):
+        t += r10.randint(90_000, 400_000)     # набор стоял
+    T10.append(t)
+    C10.append(r10.randint(150, 260))
+    D10.append(r10.randint(950, 1000))
+i10 = page9.find('function mbuck(') if page9 else -1
+if i10 < 0:
+    check("mbuck найдена на странице", False)
+else:
+    depth, j10 = 0, i10
+    while True:
+        ch = page9[j10]
+        depth += ch == '{'
+        depth -= ch == '}'
+        j10 += 1
+        if ch == '}' and depth == 0:
+            break
+    js10 = page9[i10:j10] + """
+var fs=require('fs'),a=JSON.parse(fs.readFileSync(process.argv[2],'utf8')),r={};
+[1000,5000,60000,3600000].forEach(function(s){r[s]=mbuck(a.T,a.C,a.D,s)});
+console.log(JSON.stringify(r));"""
+    with tempfile.TemporaryDirectory() as td:
+        jf = os.path.join(td, 'mbuck.js')
+        df = os.path.join(td, 'in.json')
+        open(jf, 'w', encoding='utf-8').write(js10)
+        json.dump({"T": T10, "C": C10, "D": D10}, open(df, 'w'))
+        r = subprocess.run(['node', jf, df], capture_output=True, text=True)
+        out10 = json.loads(r.stdout) if r.returncode == 0 else None
+    if out10 is None:
+        check("node запустил mbuck", False, r.stderr[-200:])
+    else:
+        bad10 = []
+        for s in (1000, 5000, 60000, 3600000):
+            kt, kc, kd = mbuck_ref(T10, C10, D10, s)
+            o = out10[str(s)]
+            if (o['t'], o['c'], o['d']) != (kt, kc, kd):
+                bad10.append(s)
+            print(f"  интервал {s // 1000} с: {len(kt)} интервалов, "
+                  f"импульсов {sum(kc)} из {sum(C10)}")
+        check("интервалы страницы совпадают с независимым расчётом",
+              not bad10, f"расхождения на шагах {bad10}")
+        # законченные интервалы теряют только хвост: не больше одного шага
+        kt, kc, kd = mbuck_ref(T10, C10, D10, 60000)
+        tail = sum(c for t, c in zip(T10, C10) if t >= kt[-1] + 60000)
+        check("в интервалы не попал только незаконченный хвост",
+              sum(kc) + tail == sum(C10), f"хвост {tail}")
+
 print("\n" + "=" * 62)
 if fails:
     print(f"ПРОВАЛЕНО: {len(fails)}")

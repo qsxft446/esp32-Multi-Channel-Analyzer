@@ -204,6 +204,22 @@ BecqMoni (answers to commands).
   (ANSI N42.42), SPE (SpectraLine). Under the “settings” checkbox is the
   same processing parameter table as on “MCA config”: the parameters can be
   changed right during acquisition to see how the spectrum changes.
+- **CPS monitor** — on the same tab, below the spectrum: current CPS, mean
+  over the whole history with its error, last interval, a plot by averaging
+  intervals with a moving average (wheel — zoom, drag — pan, double click —
+  whole history), an interval table and CSV export. The history is a
+  6-hour ring at one sample per second in the device PSRAM (~216 KB,
+  `main/mca_hist.c`): it accumulates while the spectrum is acquired, even
+  with the page closed; the page only fetches new samples. The CPS of an
+  interval is the counts divided by the time acquisition actually ran
+  (without lost chunks). “Clear history” does not touch the spectrum, and
+  “Reset” does not touch the history.
+- **Device clock** — there is no real-time clock. The time comes from SNTP
+  (`pool.ntp.org`) when there is internet access; otherwise any open page
+  gives the device the browser time when the clock is unset or off by more
+  than 2 s (and repeats hourly). The time and its source are shown in the
+  monitor header; a spectrum export without a time from the page takes it
+  from the device clock.
 - **MCA config** — oscilloscope with edge triggering (auto
   and normal modes, time base 64–32768 samples, amplitude triggering —
   “amplitude from–to”: show only pulses whose height above
@@ -588,9 +604,10 @@ which request was being served at that moment and for how long.
 
 ## Tools (`tools/`)
 
-- `test_dsp.py` — 9 levels of processing checks on a model, including the
-  vector version against the plain one and the oscilloscope frame
-  compression against the page decoder (in node). `python tools/test_dsp.py`.
+- `test_dsp.py` — 10 levels of processing checks on a model, including the
+  vector version against the plain one, the oscilloscope frame compression
+  against the page decoder and the splitting of the CPS history into
+  intervals (the page functions run in node). `python tools/test_dsp.py`.
 - `dspmodel.py`, `scopemodel.py`, `scopecodec.py` — models of the
   processing, the oscilloscope and its frame compression.
 - `hotloop.py` — hot-loop cycle estimate from the disassembly.

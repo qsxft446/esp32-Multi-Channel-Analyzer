@@ -89,12 +89,19 @@ window.__PULSE__ = (function(){var a=[];for(var i=0;i<512;i++){
   var v=2098+(Math.random()-0.5)*8,k=i-150;
   if(k>=0)v+=k<5?60*(k+1)/5:60*Math.exp(-(k-5)/43);a.push(Math.round(v))}
   return {ch:300,tg:175,age:120,at:52,ai:48,d:a};})();
+/* два часа истории CPS по секунде, с разрывом 5 минут посередине */
+window.__HIST__ = (function(){var a=[],ds=1000;
+  for(var i=0;i<7200;i++){ds+=10;if(i==3600)ds+=3000;
+    var m=210+30*Math.sin(i/900),
+        c=Math.max(0,Math.round(m+Math.sqrt(m)*(Math.random()+Math.random()+Math.random()-1.5)*1.4));
+    a.push([ds,c,1000])}
+  a.nowds=ds+3;return a})();
 window.fetch = function(u){
   var d;
   if (u.indexOf('/spectrum') === 0) d = {d: %s};
   else if (u.indexOf('/stat') === 0) d = {ev:12345,cps:210,pile:0,dead:0,
         base:2048,lost:0,over:0,samp:9000000,freq:8000000,run:1,ms:60000,
-        mode:0,srun:1,cap:1};
+        mode:0,srun:1,cap:1,tnow:Date.now(),tsrc:2};
   else if (u.indexOf('/cfg') === 0) d = {threshold:20,cpc:1000,nch:%d,
         algo:0,polarity:0,int_rise:20,int_fall:32,hysteresis:50,trap_L:20,trap_G:44,
         rearm:64,search:70,baseline_shift:10,
@@ -118,6 +125,24 @@ window.fetch = function(u){
       v.setUint16(28 + 2 * i, Math.round(x), true);
     }
     return Promise.resolve({arrayBuffer: function(){return Promise.resolve(b)}});
+  }
+  else if (u.indexOf('/time') === 0) d = {now: Date.now(), src: 2};
+  else if (u.indexOf('/hist') === 0) {
+    /* история CPS как у прибора: 7 x uint32, затем отсчёты по 10 байт */
+    var hq = new URLSearchParams(u.split('?')[1] || ''), H = window.__HIST__;
+    var hn = H.length, from = +hq.get('from') || 0;
+    if (from > hn) from = 0;
+    var cnt = Math.min(1024, hn - from), hb = new ArrayBuffer(28 + 10 * cnt),
+        hv = new DataView(hb);
+    hv.setUint32(0, 7, true); hv.setUint32(4, from, true);
+    hv.setUint32(8, hn, true); hv.setUint32(12, H.nowds, true);
+    hv.setUint32(16, cnt, true); hv.setUint32(20, 21600, true);
+    for (var k = 0; k < cnt; k++) {
+      var sm = H[from + k], o = 28 + 10 * k;
+      hv.setUint32(o, sm[0], true); hv.setUint32(o + 4, sm[1], true);
+      hv.setUint16(o + 8, sm[2], true);
+    }
+    return Promise.resolve({arrayBuffer: function(){return Promise.resolve(hb)}});
   }
   else d = {d:[]};
   return Promise.resolve({json:function(){return Promise.resolve(d)}});
