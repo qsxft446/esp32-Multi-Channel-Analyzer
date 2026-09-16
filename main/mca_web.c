@@ -547,11 +547,13 @@ static const char PAGE[] =
 "return {ymn:ymn,ym:ym}}"
 /* Нормируем на длину окна, как это делает прошивка: иначе картинка
    и числа в браузере не совпадали бы с каналами спектра. */
-"function trapOf(a,L,G){var t=[],acc=0;"
+/* Окно и зазор здесь - wL/wG, а не L/G: имя L занято функцией перевода
+   L() (см. LJS), локальное L перекрыло бы её (проверяет check_i18n.py). */
+"function trapOf(a,wL,wG){var t=[],acc=0;"
 "for(var n=0;n<a.length;n++){var v=a[n],"
-"vL=(n-L>=0)?a[n-L]:a[0],vG=(n-G>=0)?a[n-G]:a[0],"
-"vGL=(n-G-L>=0)?a[n-G-L]:a[0];var d=v-vL-vG+vGL;"
-"acc+=d;t[n]=acc/L}return t}"
+"vL=(n-wL>=0)?a[n-wL]:a[0],vG=(n-wG>=0)?a[n-wG]:a[0],"
+"vGL=(n-wG-wL>=0)?a[n-wG-wL]:a[0];var d=v-vL-vG+vGL;"
+"acc+=d;t[n]=acc/wL}return t}"
 /* ИЗМЕРИТЕЛЬ ПИКА (поля "пик от"/"пик до").
    Считает центр тяжести, ширину на полувысоте и разрешение в
    процентах - это объективная замена разглядыванию формы импульса.
@@ -614,12 +616,14 @@ static const char PAGE[] =
 "L(' кодов ещё не было &mdash; снизьте «синхр. по фронту»',' codes yet &mdash; lower “trigger on edge”')):"
 "L('ждём данные...','waiting for data...');return}"
 "var fh=window.REALHZ||8e6,tg=j.tg;window.LASTJ=j;window.LASTW=wait;"
-"var L=+document.getElementById('p_trap_L').value,G=+document.getElementById('p_trap_G').value;"
+/* wL/wG, а не L/G: локальное L перекрыло бы функцию перевода L(), и весь
+   текст под графиком пропадал (исключение глотал опрос прибора) */
+"var wL=+document.getElementById('p_trap_L').value,wG=+document.getElementById('p_trap_G').value;"
 "var Wn=Math.min(+document.getElementById('zm').value||512,a.length);"
 /* без синхронизации пропускаем запас слева: там трапеция ещё не встала */
-"var st=tg>=0?tg-Math.round(Wn*0.2):(L|0)+(G|0)+16;"
+"var st=tg>=0?tg-Math.round(Wn*0.2):(wL|0)+(wG|0)+16;"
 "if(st<0)st=0;if(st+Wn>a.length)st=a.length-Wn;"
-"var tr=trapOf(a,L,G);"
+"var tr=trapOf(a,wL,wG);"
 /* база и шум - по участку ДО фронта: в окне с импульсом среднее завышено */
 "var e=tg>0?Math.max(1,tg-8):a.length,bl=0,nv=0;"
 "for(var i=0;i<e;i++)bl+=a[i];bl/=e;"
@@ -632,7 +636,7 @@ static const char PAGE[] =
 "window.SCV={n:Wn,z:tg>=0?tg-st:0,W:cv.width,a:da,sg:NEG()?-1:1,us:1e6/fh,bl:bl};"
 "if(rr)rulDraw(rr,ref);rulText();"
 "var mn=a[0],mx=a[0];for(var i=0;i<a.length;i++){if(a[i]<mn)mn=a[i];if(a[i]>mx)mx=a[i]}"
-"var sg=NEG()?-1:1,nmx=-1e9;for(var i=L+G;i<e;i++)if(sg*tr[i]>nmx)nmx=sg*tr[i];"
+"var sg=NEG()?-1:1,nmx=-1e9;for(var i=wL+wG;i<e;i++)if(sg*tr[i]>nmx)nmx=sg*tr[i];"
 "var thr=+document.getElementById('p_threshold').value;"
 "var sy=tg>=0?L('<b style=color:#34d3c0>синхронизирован</b> по фронту ','<b style=color:#34d3c0>triggered</b> on an edge of ')+j.rise+"
 "L(' кодов (уровень ',' codes (level ')+j.lvl+')':"

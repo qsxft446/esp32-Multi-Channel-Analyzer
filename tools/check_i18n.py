@@ -211,8 +211,36 @@ def js_tokens(js):
     return toks
 
 
-def check_js(js):
-    toks, err, inside = js_tokens(js), [], set()
+def check_shadow(toks, js, allow_def):
+    """Имя L занято функцией перевода. Переменная или параметр L в функции
+    страницы перекрывают её, и L('...') там падает с TypeError - а опрос
+    прибора глотает исключения, страница молча перестаёт обновляться."""
+    err = []
+    for k, t in enumerate(toks):
+        if t[0] != 'w':
+            continue
+        if t[2] == 'L' and not (k > 0 and toks[k - 1][2] == '.'):
+            a = toks[k + 1] if k + 1 < len(toks) else None
+            b = toks[k + 2] if k + 2 < len(toks) else None
+            if (a and a[2] == '=' and not (b and b[2] == '=' and b[1] == a[1] + 1)):
+                err.append('переменная L перекрывает L(): ' + js[t[1]:t[1] + 50])
+        if t[2] == 'function':
+            j = k + 1
+            if j < len(toks) and toks[j][0] == 'w':
+                if toks[j][2] == 'L' and not allow_def:
+                    err.append('функция L переопределена: ' + js[t[1]:t[1] + 50])
+                j += 1
+            if j < len(toks) and toks[j][2] == '(':
+                while j < len(toks) and toks[j][2] != ')':
+                    if toks[j][0] == 'w' and toks[j][2] == 'L':
+                        err.append('параметр L перекрывает L(): ' + js[t[1]:t[1] + 50])
+                    j += 1
+    return err
+
+
+def check_js(js, allow_def=False):
+    toks, inside = js_tokens(js), set()
+    err = check_shadow(toks, js, allow_def)
     for k, t in enumerate(toks):
         if not (t[0] == 'w' and t[2] == 'L' and k + 1 < len(toks)
                 and toks[k + 1][2] == '('):
@@ -254,7 +282,7 @@ def main():
         html = ''.join(expand(c_tokens(m.group(2)), defs))
         err = []
         if name == 'LJS':
-            err += check_js(html)
+            err += check_js(html, allow_def=True)
         elif name != 'CSS':
             for sm in re.finditer(r'<script>(.*?)</script>', html, re.S):
                 err += check_js(sm.group(1))
