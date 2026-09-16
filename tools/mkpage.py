@@ -127,6 +127,13 @@ window.fetch = function(u){
     return Promise.resolve({arrayBuffer: function(){return Promise.resolve(b)}});
   }
   else if (u.indexOf('/time') === 0) d = {now: Date.now(), src: 2};
+  else if (u.indexOf('/diag/data') === 0) d = {enabled:false, flow:true,
+        chunks:994703, samples:2035162338, rate:20000000, exp:20000000,
+        err:0, lost:191, ctrl:0x40000400, ctrl1:0x21000ffb, pclk:0,
+        stats:false, pf:{ch:9775, q:2, wait:30, work:120, busy:908, lost:0,
+        heap:180000, hmin:156000, rssi:0, wmax:[21200,0,1200], wcnt:[1,0,1]},
+        cyc:[142,215,676], fhz:20000000,
+        ev:[[51400,1,15,2,10500,900,1],[51000,1,10,2,11500,870,3]]};
   else if (u.indexOf('/hist') === 0) {
     /* история CPS как у прибора: 7 x uint32, затем отсчёты по 10 байт */
     var hq = new URLSearchParams(u.split('?')[1] || ''), H = window.__HIST__;

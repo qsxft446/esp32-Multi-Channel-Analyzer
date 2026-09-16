@@ -179,8 +179,7 @@ static const char PAGE[] =
 /* Режимы - вкладками. Сам режим живёт в скрытом
    списке md: на него завязаны опрос и синхронизация с прибором. */
 "<nav id=tabs><span data-md=0 onclick=tab(0) data-en='Spectrum'>Спектр</span>"
-"<span data-md=1 onclick=tab(SCM) data-en='MCA config'>Конфиг MCA</span>"
-"<a href=/diag data-en='Diagnostics'>Диагностика</a>"
+"<span data-md=1 onclick=tab(SCM) data-en='Oscilloscope'>Осциллограф</span>"
 "<a href=/wifi data-en='Network'>Сеть</a><a href=/help data-en='Help'>Справка</a></nav>"
 "<select id=md hidden onchange=setmode()><option value=0><option value=1>"
 "<option value=2><option value=3></select>"
@@ -250,6 +249,9 @@ static const char PAGE[] =
 "<button id=bx1 onclick=setX(1) data-en='smp'>отсч</button></span>"
 "<span class=lbl title='0 = автоматически' data-en-title='0 = automatic'>Y max</span><input id=ymax type=number value=0></span>"
 "<label id=g_shs><input type=checkbox id=shset onchange=vis()> <span data-en='settings'>настройки</span></label>"
+"<label id=g_shd title='Тракт АЦП: поток, профиль, журнал потерь, проверка линий данных' "
+"data-en-title='ADC path: stream, profile, loss log, data line check'>"
+"<input type=checkbox id=shdiag onchange=vis()> <span data-en='diagnostics'>диагностика</span></label>"
 "<span class='ml mut' id=g_leg style=font-size:11.5px data-en='ruler: a click on the plot places "
 "<b style=color:#7ee081>A</b> start, <b style=color:#f0c45a>B</b> peak, <b style=color:#ff8a82>C</b> end; marks can be dragged'>"
 "линейка: щелчок по графику ставит <b style=color:#7ee081>A</b> начало, "
@@ -306,6 +308,15 @@ static const char PAGE[] =
 "<span class=mut style=font-size:11.5px data-en='values go to the device only with this button and are saved in its memory'>"
 "в прибор значения уходят только по этой кнопке и "
 "сохраняются в его памяти</span></div></section>"
+/* ДИАГНОСТИКА ТРАКТА АЦП - под галочкой «диагностика», на обеих вкладках
+   (раньше - отдельная страница /diag) */
+"<section class='panel pad' id=g_diag>"
+"<h3 data-en='ADC path diagnostics'>Диагностика тракта АЦП</h3>"
+"<label><input type=checkbox id=den onchange=dtog()> "
+"<span data-en='per-bit statistics (analyses 1 chunk/s)'>побитовая статистика (разбор 1 чанка/с)</span></label>"
+"<div id=dout></div>"
+"<button class='btn sm' onclick=dprobe() style=margin-top:10px data-en='Check data lines'>Проверить линии данных</button>"
+"<div id=dpr style=margin-top:8px;font-size:12.5px></div></section>"
 "</div>"
 "<script>i18n();"
 /* Список частот присылает прибор (/cfg, поле fl): он зависит от
@@ -376,8 +387,8 @@ static const char PAGE[] =
 "var H={"
 "emu:L('Эмуляция анализатора на последовательном порту UART0 - разъём UART/COM на плате (не встроенный USB). Прибор отвечает по бинарному протоколу shproto, и программы на ПК, умеющие работать с такими анализаторами (например, BecqMoni), видят его как MCA: набор, остановка, сброс, выгрузка спектра и статуса, калибровка. Скорость порта выбирается здесь, действует сразу и сохраняется. Пока эмуляция включена, консоль молчит: сообщения прошивки на порт не идут. Программе отдаётся столько каналов, сколько выбрано в «Каналов»: в BecqMoni выставьте то же число каналов, тогда они совпадут с прибором один в один. Заводские команды настройки из программы не принимаются - параметры задаются на этой странице.',"
 "'Analyzer emulation on the serial port UART0 - the UART/COM connector on the board (not the native USB). The device answers using the binary shproto protocol, and PC programs that work with such analyzers (for example, BecqMoni) see it as an MCA: start, stop, reset, spectrum and status upload, calibration. The port speed is selected here, takes effect immediately and is saved. While emulation is on, the console is silent: firmware messages are not sent to the port. The program receives as many channels as selected in “Channels”: set the same number of channels in BecqMoni, then they match the device one to one. Factory tuning commands from the program are not accepted - parameters are set on this page.'),"
-"fq:L('Частота семплирования АЦП. Выше - подробнее форма импульса, но обработка может не успевать: смотрите потерянные чанки на странице Диагностика. На 16 МГц обработка спектра занимает около 85 % ядра, на 17.14 - около 92 % (предел), на 20 МГц спектр не успевает - она для осциллографа. Гармоники CLK могут мешать WiFi: если на какой-то частоте страница начинает замирать, а пинг до прибора растёт, смените частоту или канал роутера. Параметры фильтра заданы в отсчётах, поэтому на другой частоте то же L или G - другое время.',"
-"'ADC sample rate. Higher - more detailed pulse shape, but processing may not keep up: watch lost chunks on the Diagnostics page. At 16 MHz spectrum processing takes about 85 % of the core, at 17.14 about 92 % (limit), at 20 MHz the spectrum does not keep up - it is for the oscilloscope. CLK harmonics can interfere with WiFi: if at some rate the page starts to freeze and ping to the device grows, change the rate or the router channel. Filter parameters are set in samples, so at another rate the same L or G is a different time.'),"
+"fq:L('Частота семплирования АЦП. Выше - подробнее форма импульса, но обработка может не успевать: смотрите потерянные чанки под галочкой «диагностика». На 16 МГц обработка спектра занимает около 85 % ядра, на 17.14 - около 92 % (предел), на 20 МГц спектр не успевает - она для осциллографа. Гармоники CLK могут мешать WiFi: если на какой-то частоте страница начинает замирать, а пинг до прибора растёт, смените частоту или канал роутера. Параметры фильтра заданы в отсчётах, поэтому на другой частоте то же L или G - другое время.',"
+"'ADC sample rate. Higher - more detailed pulse shape, but processing may not keep up: watch lost chunks under the “diagnostics” checkbox. At 16 MHz spectrum processing takes about 85 % of the core, at 17.14 about 92 % (limit), at 20 MHz the spectrum does not keep up - it is for the oscilloscope. CLK harmonics can interfere with WiFi: if at some rate the page starts to freeze and ping to the device grows, change the rate or the router channel. Filter parameters are set in samples, so at another rate the same L or G is a different time.'),"
 "polarity:L('0 - импульсы вверх от базовой линии, 1 - вниз (например, анод ФЭУ напрямую). При 1 сигнал переворачивается ещё до обработки, и порог и спектр работают как с импульсами вверх; осциллограф синхронизируется по фронту вниз. Постоянная составляющая сигнала на обработку не влияет - её вычитает трапеция.',"
 "'0 - pulses go up from the baseline, 1 - down (for example, PMT anode directly). With 1 the signal is inverted before processing, so the threshold and spectrum work as with upward pulses; the oscilloscope triggers on a falling edge. A DC offset of the signal does not affect processing - the trapezoid subtracts it.'),"
 "algo:L('Трапеция: амплитуда по вершине трапеции (окно L, зазор G, по желанию среднее по плато). Интегрирование: среднее отсчётов импульса вокруг вершины за вычетом базовой линии (до и после вершины, база 2^N, окно базы). Поля, которые при выбранном способе ни на что не влияют, в таблице приглушены. Обнаружение события в обоих способах одинаковое - по выходу трапеции, поэтому L, G, порог, гистерезис, перезапуск и поиск пика нужны всегда. Масштабы способов различаются - после переключения подберите «Кодов на канал». Смена способа очищает спектр.',"
@@ -390,8 +401,8 @@ static const char PAGE[] =
 "'How many amplitude codes per spectrum channel: 1 - a channel equals an ADC code, 0.5 - twice as fine, 2 - twice as coarse. Top of scale = channels x codes per channel, shown next to it. With the baseline in the middle of the ADC there are about 2047 codes of headroom, so 2048 channels of 1 code cover the whole scale. The amplitude is in codes for both methods: trapezoid - pulse height, integration - mean height in the window. Changing this number clears the spectrum: old events are laid out on a different scale.'),"
 "nch:L('Сколько каналов показывать: 2048, 4096 или 8192. Это длина шкалы: верх = каналов x кодов на канал. Раскладка событий по каналам от этого не зависит - спектр не сжимается и не сбрасывается, меняется только, докуда видно вправо. Прибор копит все 8192 канала, так что переключать можно в любой момент.',"
 "'How many channels to show: 2048, 4096 or 8192. This is the scale length: top = channels x codes per channel. How events are laid out in channels does not depend on it - the spectrum is not compressed or reset, only how far to the right is visible changes. The device accumulates all 8192 channels, so you can switch at any time.'),"
-"threshold:L('Порог по выходу трапеции, В КОДАХ АЦП (нормирован на длину окна, поэтому не зависит от L). Ставится выше шума трапеции - см. строку «шум фильтра» на вкладке «Конфиг MCA».',"
-"'Threshold on the trapezoid output, IN ADC CODES (normalized to the window length, so it does not depend on L). Set above the trapezoid noise - see the “filter noise” line on the “MCA config” tab.'),"
+"threshold:L('Порог по выходу трапеции, В КОДАХ АЦП (нормирован на длину окна, поэтому не зависит от L). Ставится выше шума трапеции - см. строку «шум фильтра» на вкладке «Осциллограф».',"
+"'Threshold on the trapezoid output, IN ADC CODES (normalized to the window length, so it does not depend on L). Set above the trapezoid noise - see the “filter noise” line on the “Oscilloscope” tab.'),"
 "hysteresis:L('Доля порога В ПРОЦЕНТАХ, ниже которой должна опуститься трапеция, чтобы детектор снова взвёлся. 50 означает половину порога. Прежний вариант вычитал единицу, что означало почти полное отсутствие гистерезиса.',"
 "'Fraction of the threshold IN PERCENT that the trapezoid must drop below before the detector re-arms. 50 means half the threshold. The previous version subtracted one, which meant almost no hysteresis.'),"
 "trap_L:L('Длина окна интегрирования: сколько отсчётов импульса суммируется. Именно это окно определяет, какая часть импульса пойдёт в амплитуду, и насколько усреднится шум. ВНИМАНИЕ: в приборах, где окно задаётся парой RISE и FALL, окно интегрирования - это их сумма: RISE=6 FALL=15 соответствует нашему L=21. При интегрировании L и G тоже работают: по трапеции находится импульс и место его вершины.',"
@@ -443,7 +454,7 @@ static const char PAGE[] =
 "document.getElementById('p_cpc').oninput=cpcTop;document.getElementById('p_nch').onchange=cpcTop;"
 "function cmd(c){fetch('/cmd?do='+c)}"
 /* Старт/Стоп относятся к открытой вкладке: на «Спектре» - набор
-   спектра, на «Конфиг MCA» - только осциллограф. На паузе осциллограф
+   спектра, на «Осциллографе» - только осциллограф. На паузе осциллограф
    не опрашивается и держит последний кадр (линейка работает). */
 /* RLOCK - как MDLOCK для режима: ответ /stat, ушедший с прибора ДО
    команды, иначе вернул бы прежнее состояние, и опрос осциллографа и
@@ -786,8 +797,9 @@ static const char PAGE[] =
    его как вкладку «Спектр». */
 /* Галочки «настройки» и «вся шкала»: выбор помнится в браузере. */
 "function vis(){try{localStorage.setItem('mca_shset',document.getElementById('shset').checked?1:0);"
-"localStorage.setItem('mca_fx',document.getElementById('fx').checked?1:0)}catch(e){}"
-"window.LASTSIG='';showCtl()}"
+"localStorage.setItem('mca_fx',document.getElementById('fx').checked?1:0);"
+"localStorage.setItem('mca_shdiag',document.getElementById('shdiag').checked?1:0)}catch(e){}"
+"window.LASTSIG='';showCtl();if(document.getElementById('shdiag').checked)dupd()}"
 /* ось Y осциллографа: 0 - от базы, 1 - от середины шкалы, 2 - коды АЦП */
 "function setRef(v){window.YREF=v;"
 "for(var i=0;i<3;i++)document.getElementById('rf'+i).className=i==v?'on':'';"
@@ -800,6 +812,7 @@ static const char PAGE[] =
 "function NEG(){var e=document.getElementById('p_polarity');return !!(e&&+e.value==1)}"
 "try{document.getElementById('shset').checked=localStorage.getItem('mca_shset')==='1';"
 "document.getElementById('fx').checked=localStorage.getItem('mca_fx')==='1';"
+"document.getElementById('shdiag').checked=localStorage.getItem('mca_shdiag')==='1';"
 "window.YREF=+(localStorage.getItem('mca_ref')||0);"
 "window.XAX=+(localStorage.getItem('mca_xax')||0)}catch(e){window.YREF=0;window.XAX=0}"
 "for(var i=0;i<3;i++)document.getElementById('rf'+i).className=i==window.YREF?'on':'';"
@@ -812,7 +825,8 @@ static const char PAGE[] =
    импульсам, на «Спектре» - меняют прямо во время набора и смотрят, как
    меняется спектр (вкладки переключают режим всего прибора, поэтому
    открыть обе сразу нельзя). Галочка общая. */
-"g_shs:1,g_set:document.getElementById('shset').checked};"
+"g_shs:1,g_set:document.getElementById('shset').checked,"
+"g_shd:1,g_diag:document.getElementById('shdiag').checked};"
 "for(var k in v){var e=document.getElementById(k);if(e)e.style.display=v[k]?'':'none'}"
 "if(sp)setTimeout(mdraw,0)}"
 "function hl(){var m=document.getElementById('md').value,g=(m=='3')?'1':(m=='2'?'0':m);"
@@ -830,7 +844,7 @@ static const char PAGE[] =
 "function hms(s){s=Math.floor(s);var h=Math.floor(s/3600),m=Math.floor(s%3600/60),c=s%60;"
 "return (h<10?'0':'')+h+':'+(m<10?'0':'')+m+':'+(c<10?'0':'')+c}"
 "hl();"
-"function poll(){"
+"function poll(){if(document.getElementById('shdiag').checked)dupd();"
 "var md=document.getElementById('md').value;"
 "if(md=='0'||md=='2'){mload();fetch('/spectrum').then(r=>r.json()).then(function(j){"
 "draw(j.d,document.getElementById('lg').checked);"
@@ -854,7 +868,7 @@ static const char PAGE[] =
 "'<span class=sep>|</span><span><span class=mut>'+L('истинно','true')+'</span> '+"
 "(j.cps/Math.max(0.01,1-dt/100)).toFixed(0)+L(' имп/с',' cps')+'</span>'+"
 /* загрузка обработки: около 100% - не успевает, пойдут потерянные чанки.
-   На вкладке «Конфиг MCA» спектр не набирается, и нагрузки нет. */
+   На вкладке «Осциллограф» спектр не набирается, и нагрузки нет. */
 "'<span class=sep>|</span><span title=\"'+L('Какую долю ядра занимает обработка потока. '+"
 "'Около 100% - не успевает, пойдут потерянные чанки: снизьте частоту.','Share of the core taken by stream processing. '+"
 "'Near 100% - it cannot keep up, chunks will be lost: lower the rate.')+'\"><span class=mut>'+L('загрузка','load')+'</span> '+"
@@ -1091,6 +1105,114 @@ static const char PAGE[] =
 "setTimeout(function(){URL.revokeObjectURL(a.href);a.remove()},1000)}"
 "function mclr(){if(!confirm(L('Очистить историю CPS на приборе?','Clear the CPS history on the device?')))return;"
 "fetch('/hist?clear=1').then(function(){mload()})}"
+/* диагностика тракта АЦП (была страницей /diag): опрос раз в секунду,
+   только пока галочка включена (см. poll) */
+"function dtog(){fetch('/diag/set?en='+(document.getElementById('den').checked?1:0))}"
+"function df(v,c){return '<span class='+c+'>'+v+'</span>'}"
+/* строка таблицы: подпись и значение */
+"function dR(a,b){return '<tr><td>'+a+'</td><td>'+b+'</td></tr>'}"
+"function dupd(){fetch('/diag/data').then(r=>r.json()).then(function(j){"
+"document.getElementById('den').checked=j.enabled;"
+"var h='<table><tr><th>'+L('Параметр','Parameter')+'</th><th>'+L('Значение','Value')+'</th></tr>';"
+"h+=dR(L('Поток данных','Data flow'),j.flow?df(L('идёт','flowing'),'ok'):df(L('НЕТ ДАННЫХ','NO DATA'),'bad'));"
+"h+=dR(L('Чанков всего','Chunks total'),j.chunks);"
+"h+=dR(L('Отсчётов всего','Samples total'),j.samples);"
+"var ec=Math.abs(j.err)<=2?'ok':(Math.abs(j.err)<=10?'warn':'bad');"
+"h+=dR(L('Скорость измеренная','Measured rate'),(j.rate/1e6).toFixed(3)+L(' МГц',' MHz'));"
+"h+=dR(L('Скорость ожидаемая','Expected rate'),(j.exp/1e6).toFixed(3)+L(' МГц',' MHz'));"
+"h+=dR(L('Отклонение','Deviation'),df(j.err+' %',ec));"
+"h+=dR(L('Потеряно чанков','Chunks lost'),j.lost>0?df(j.lost,'warn'):j.lost);"
+"var tot=j.chunks+j.lost;var lp=tot?100*j.lost/tot:0;"
+"h+=dR(L('Доля потерь','Loss share'),lp<0.1?df(lp.toFixed(2)+L(' % — чисто',' % — clean'),'ok'):"
+"df(lp.toFixed(1)+L(' % — обработка не успевает',' % — processing cannot keep up'),'bad'));"
+"if(lp>0.1){var can=j.exp*(1-lp/100);"
+"h+=dR(L('Потолок обработки','Processing ceiling'),df(L('около ','about ')+(can/1e6).toFixed(1)+"
+"L(' МГц — поставьте эту частоту или ниже',' MHz — set this rate or lower'),'warn'))}"
+"var cs=(j.ctrl>>>29)&3;var st=(j.ctrl1>>>29)&1;var bl=j.ctrl1&0xFFFF;"
+"var tb=(j.ctrl1>>>24)&1;"
+"h+=dR(L('Такт модуля CAM','CAM module clock'),cs?df(L('вкл','on')+' (clk_sel='+cs+')','ok'):df(L('ВЫКЛЮЧЕН','OFF'),'bad'));"
+"h+=dR('cam_start',st?df(L('запущен','started'),'ok'):df(L('НЕ УСТАНОВЛЕН','NOT SET'),'bad'));"
+"h+=dR(L('16-битный режим','16-bit mode'),tb?df(L('да','yes'),'ok'):df(L('нет','no'),'bad'));"
+"h+=dR(L('Длина чанка, байт','Chunk length, bytes'),bl+1);"
+"h+=dR(L('Уровень на PCLK','PCLK level'),j.pclk);"
+"h+='<tr><td>cam_ctrl / ctrl1</td><td>0x'+(j.ctrl>>>0).toString(16)+' / 0x'+(j.ctrl1>>>0).toString(16)+'</td></tr>';"
+"h+='</table>';"
+/* ПРОФИЛЬ: что было за прошлую секунду. Очередь 16 из 16 - следующий
+   чанк потерян; долгие запросы - кандидаты в виновники. */
+"var p=j.pf;if(p){"
+"var qc=p.q>=14?'bad':(p.q>=8?'warn':'ok');"
+"h+='<h4>'+L('Профиль за последнюю секунду','Profile for the last second')+'</h4><table><tr><th>'+"
+"L('Что','What')+'</th><th>'+L('Значение','Value')+'</th></tr>';"
+"h+=dR(L('Чанков обработано','Chunks processed'),p.ch);"
+/* занятость задачи обработки: около 100% - очередь растёт, пойдут потери */
+"h+=dR(L('Занятость обработки','Processing busy'),"
+"df((p.busy/10).toFixed(1)+' %',p.busy>900?'bad':(p.busy>700?'warn':'ok')));"
+"h+=dR(L('Пик очереди чанков','Chunk queue peak'),df(p.q+L(' из 16',' of 16'),qc)+"
+"' <span style=opacity:.6>'+L('(16 - следующий теряется)','(16 - the next one is lost)')+'</span>');"
+"h+=dR(L('Самая долгая обработка чанка','Longest chunk processing'),(p.work/1000).toFixed(2)+L(' мс',' ms'));"
+"h+=dR(L('Самое долгое ожидание чанка','Longest chunk wait'),(p.wait/1000).toFixed(2)+L(' мс',' ms'));"
+"h+=dR(L('Потеряно за секунду','Lost in the last second'),p.lost?df(p.lost,'bad'):'0');"
+"var wn=['/spectrum','/scope','/stat'];"
+"for(var k=0;k<3;k++)h+=dR(L('Запрос ','Request ')+wn[k],p.wcnt[k]+L(' за с, самый долгий ','/s, longest ')+"
+"(p.wmax[k]/1000).toFixed(1)+L(' мс',' ms'));"
+"h+=dR(L('Свободно внутр. памяти','Free internal memory'),(p.heap/1024).toFixed(0)+L(' КБ (минимум ',' KB (minimum ')+"
+"(p.hmin/1024).toFixed(0)+L(' КБ)',' KB)'));"
+"h+=dR(L('Сигнал WiFi','WiFi signal'),p.rssi?p.rssi+L(' дБм',' dBm'):L('нет связи с роутером','no connection to the router'));"
+/* такты процессора на отсчёт по этапам против бюджета 240 МГц / частота:
+   видно, хватает ли ядра на эту частоту и что в обработке дороже всего */
+"if(j.cyc&&j.fhz){var bud=240e6/j.fhz,cs=(j.cyc[0]+j.cyc[1]+j.cyc[2])/100;"
+"h+=dR(L('Такты на отсчёт (спектр)','CPU cycles per sample (spectrum)'),cs>0?"
+"L('копия ','copy ')+(j.cyc[0]/100).toFixed(2)+L(' + разность ',' + difference ')+(j.cyc[1]/100).toFixed(2)+"
+"L(' + порог и события ',' + threshold and events ')+(j.cyc[2]/100).toFixed(2)+' = '+"
+"df(cs.toFixed(2),cs>bud*0.9?'bad':(cs>bud*0.75?'warn':'ok'))+L(' из ',' of ')+bud.toFixed(1):"
+"L('спектр сейчас не обрабатывается','the spectrum is not being processed now'))}"
+"h+='</table>';"
+/* Журнал потерь: что делал веб в момент потери чанка. Если потери
+   совпадают с запросами - виноват веб, если нет - обработка. */
+"var wn2=[L('нет','none'),'/spectrum','/scope','/stat'];"
+"if(j.ev&&j.ev.length){"
+"h+='<h4>'+L('Журнал потерь чанков','Chunk loss log')+'</h4><table><tr><th>'+L('Время','Time')+'</th><th>'+"
+"L('Потеряно','Lost')+'</th><th>'+L('Очередь','Queue')+'</th><th>'+L('Шёл запрос','Request in progress')+'</th><th>'+"
+"L('Длился','Took')+'</th><th>'+L('Обработка','Processing')+'</th><th>'+L('Режим','Mode')+'</th></tr>';"
+"j.ev.forEach(function(e){"
+"h+='<tr><td>'+(e[0]/1000).toFixed(1)+L(' с',' s')+'</td><td>'+e[1]+'</td><td>'+e[2]+'</td>'+"
+"'<td>'+(wn2[e[3]]||'?')+'</td><td>'+(e[4]/1000).toFixed(1)+L(' мс',' ms')+'</td><td>'+"
+"(e[5]/1000).toFixed(2)+L(' мс',' ms')+'</td><td>'+"
+"(e[6]==1||e[6]==3?L('осциллограф','scope'):L('спектр','spectrum'))+'</td></tr>'});"
+"h+='</table>'}"
+"else h+='<p style=opacity:.6>'+L('Потерь чанков не было.','No chunk losses.')+'</p>';"
+"}"
+"if(j.stats){"
+"h+='<table><tr><th>'+L('Бит','Bit')+'</th><th>'+L('Переключений','Toggles')+'</th><th>'+L('Состояние','State')+'</th></tr>';"
+"var nm=['D0','D1','D2','D3','D4','D5','D6','D7','D8','D9','D10','D11','OTR'];"
+"for(var b=0;b<13;b++){var st='',c='ok';"
+"if(j.a1&(1<<b)){st=L('всегда 1','always 1');c='bad'}"
+"else if(j.a0&(1<<b)){st=L('всегда 0','always 0');c='bad'}"
+"else st=L('меняется','toggling');"
+"h+='<tr><td>'+nm[b]+'</td><td>'+j.tg[b]+'</td><td>'+df(st,c)+'</td></tr>'}"
+"h+='</table>';"
+"h+='<table><tr><th>'+L('Значения в чанке','Values in the chunk')+'</th><th></th></tr>';"
+"h+=dR('min / max',j.vmin+' / '+j.vmax);"
+"h+=dR(L('среднее','mean'),j.vmean);"
+"h+=dR(L('размах','range'),j.vmax-j.vmin);"
+"h+=dR(L('OTR (переполнение)','OTR (overflow)'),j.otr>0?df(j.otr,'warn'):j.otr);"
+"h+=dR(L('проанализировано','analysed'),j.an+L(' отсчётов',' samples'));"
+"h+='</table>'}"
+"else h+='<p style=opacity:.6>'+L('Побитовая статистика выключена.','Per-bit statistics are off.')+'</p>';"
+"document.getElementById('dout').innerHTML=h})}"
+"function dprobe(){document.getElementById('dpr').textContent=L('измеряю 4 с...','measuring 4 s...');"
+"fetch('/diag/probe').then(r=>r.json()).then(function(j){"
+"var nm=['D0','D1','D2','D3','D4','D5','D6','D7','D8','D9','D10','D11','OTR'];"
+"var h='<table><tr><th>'+L('Линия','Line')+'</th><th>'+L('Состояние','State')+'</th></tr>';var live=0;"
+"for(var b=0;b<13;b++){var st,c;"
+"if(j.ch&(1<<b)){st=L('меняется','toggling');c='ok';live++}"
+"else if(j.hi&(1<<b)){st=L('залипла в 1','stuck at 1');c='bad'}"
+"else st=L('залипла в 0','stuck at 0'),c='bad';"
+"h+='<tr><td>'+nm[b]+'</td><td>'+df(st,c)+'</td></tr>'}h+='</table>';"
+"h+=live?df(L('Активных линий: ','Active lines: ')+live+L(' — АЦП преобразует',' — the ADC is converting'),'ok'):"
+"df(L('НИ ОДНА линия не шевелится — АЦП не преобразует. Смотрите питание платы и приходит ли на неё такт.',"
+"'NOT A SINGLE line is changing — the ADC is not converting. Check the board power and whether the clock reaches it.'),'bad');"
+"document.getElementById('dpr').innerHTML=h})}"
 "setInterval(poll,1000);poll();wsOpen();sloop();"
 "</script></body></html>";
 
@@ -1839,9 +1961,7 @@ static void net_init(void)
 "<span style=color:var(--accent)>AD9226</span></div>" \
 "<div class=chips><span class='seg lng'><button onclick=\"setLang('ru')\">RU</button>" \
 "<button onclick=\"setLang('en')\">EN</button></span></div></header>"
-#define SUB_NAV(D, W, H) "<nav><a href=/ data-en='Spectrum'>Спектр</a>" D W H "</nav>"
-#define N_DIAG    "<a href=/diag data-en='Diagnostics'>Диагностика</a>"
-#define N_DIAG_ON "<span class=on data-en='Diagnostics'>Диагностика</span>"
+#define SUB_NAV(W, H) "<nav><a href=/ data-en='Spectrum'>Спектр</a>" W H "</nav>"
 #define N_WIFI    "<a href=/wifi data-en='Network'>Сеть</a>"
 #define N_WIFI_ON "<span class=on data-en='Network'>Сеть</span>"
 #define N_HELP    "<a href=/help data-en='Help'>Справка</a>"
@@ -1849,7 +1969,7 @@ static void net_init(void)
 
 /* ---- страница/обработчики настройки сети: Ethernet и WiFi ---- */
 static const char WIFI_PAGE[] =
-SUB_HEAD("Сеть", "Network") SUB_NAV(N_DIAG, N_WIFI_ON, N_HELP)
+SUB_HEAD("Сеть", "Network") SUB_NAV(N_WIFI_ON, N_HELP)
 "<div class=wrap><section class='panel pad' style=max-width:560px>"
 "<h3>Ethernet (W5500)</h3>"
 "<div id=eth class=n style=margin-bottom:6px>...</div>"
@@ -2021,131 +2141,6 @@ static esp_err_t h_net_set(httpd_req_t *r)
 }
 
 
-/* ---- диагностика тракта АЦП ---- */
-static const char DIAG_PAGE[] =
-SUB_HEAD("Диагностика", "Diagnostics") SUB_NAV(N_DIAG_ON, N_WIFI, N_HELP)
-"<div class=wrap><section class='panel pad'>"
-"<h3 data-en='ADC path diagnostics'>Диагностика тракта АЦП</h3>"
-"<label><input type=checkbox id=en onchange=tog()> "
-"<span data-en='per-bit statistics (analyses 1 chunk/s)'>побитовая статистика (разбор 1 чанка/с)</span></label>"
-"<div id=out></div>"
-"<button class='btn sm' onclick=probe() style=margin-top:10px data-en='Check data lines'>Проверить линии данных</button>"
-"<div id=pr style=margin-top:8px;font-size:12.5px></div></section></div>"
-"<script>i18n();"
-"function tog(){fetch('/diag/set?en='+(document.getElementById('en').checked?1:0))}"
-"function f(v,c){return '<span class='+c+'>'+v+'</span>'}"
-/* строка таблицы: подпись и значение */
-"function R(a,b){return '<tr><td>'+a+'</td><td>'+b+'</td></tr>'}"
-"function upd(){fetch('/diag/data').then(r=>r.json()).then(function(j){"
-"document.getElementById('en').checked=j.enabled;"
-"var h='<table><tr><th>'+L('Параметр','Parameter')+'</th><th>'+L('Значение','Value')+'</th></tr>';"
-"h+=R(L('Поток данных','Data flow'),j.flow?f(L('идёт','flowing'),'ok'):f(L('НЕТ ДАННЫХ','NO DATA'),'bad'));"
-"h+=R(L('Чанков всего','Chunks total'),j.chunks);"
-"h+=R(L('Отсчётов всего','Samples total'),j.samples);"
-"var ec=Math.abs(j.err)<=2?'ok':(Math.abs(j.err)<=10?'warn':'bad');"
-"h+=R(L('Скорость измеренная','Measured rate'),(j.rate/1e6).toFixed(3)+L(' МГц',' MHz'));"
-"h+=R(L('Скорость ожидаемая','Expected rate'),(j.exp/1e6).toFixed(3)+L(' МГц',' MHz'));"
-"h+=R(L('Отклонение','Deviation'),f(j.err+' %',ec));"
-"h+=R(L('Потеряно чанков','Chunks lost'),j.lost>0?f(j.lost,'warn'):j.lost);"
-"var tot=j.chunks+j.lost;var lp=tot?100*j.lost/tot:0;"
-"h+=R(L('Доля потерь','Loss share'),lp<0.1?f(lp.toFixed(2)+L(' % — чисто',' % — clean'),'ok'):"
-"f(lp.toFixed(1)+L(' % — обработка не успевает',' % — processing cannot keep up'),'bad'));"
-"if(lp>0.1){var can=j.exp*(1-lp/100);"
-"h+=R(L('Потолок обработки','Processing ceiling'),f(L('около ','about ')+(can/1e6).toFixed(1)+"
-"L(' МГц — поставьте эту частоту или ниже',' MHz — set this rate or lower'),'warn'))}"
-"var cs=(j.ctrl>>>29)&3;var st=(j.ctrl1>>>29)&1;var bl=j.ctrl1&0xFFFF;"
-"var tb=(j.ctrl1>>>24)&1;"
-"h+=R(L('Такт модуля CAM','CAM module clock'),cs?f(L('вкл','on')+' (clk_sel='+cs+')','ok'):f(L('ВЫКЛЮЧЕН','OFF'),'bad'));"
-"h+=R('cam_start',st?f(L('запущен','started'),'ok'):f(L('НЕ УСТАНОВЛЕН','NOT SET'),'bad'));"
-"h+=R(L('16-битный режим','16-bit mode'),tb?f(L('да','yes'),'ok'):f(L('нет','no'),'bad'));"
-"h+=R(L('Длина чанка, байт','Chunk length, bytes'),bl+1);"
-"h+=R(L('Уровень на PCLK','PCLK level'),j.pclk);"
-"h+='<tr><td>cam_ctrl / ctrl1</td><td>0x'+(j.ctrl>>>0).toString(16)+' / 0x'+(j.ctrl1>>>0).toString(16)+'</td></tr>';"
-"h+='</table>';"
-/* ПРОФИЛЬ: что было за прошлую секунду. Очередь 16 из 16 - следующий
-   чанк потерян; долгие запросы - кандидаты в виновники. */
-"var p=j.pf;if(p){"
-"var qc=p.q>=14?'bad':(p.q>=8?'warn':'ok');"
-"h+='<h4>'+L('Профиль за последнюю секунду','Profile for the last second')+'</h4><table><tr><th>'+"
-"L('Что','What')+'</th><th>'+L('Значение','Value')+'</th></tr>';"
-"h+=R(L('Чанков обработано','Chunks processed'),p.ch);"
-/* занятость задачи обработки: около 100% - очередь растёт, пойдут потери */
-"h+=R(L('Занятость обработки','Processing busy'),"
-"f((p.busy/10).toFixed(1)+' %',p.busy>900?'bad':(p.busy>700?'warn':'ok')));"
-"h+=R(L('Пик очереди чанков','Chunk queue peak'),f(p.q+L(' из 16',' of 16'),qc)+"
-"' <span style=opacity:.6>'+L('(16 - следующий теряется)','(16 - the next one is lost)')+'</span>');"
-"h+=R(L('Самая долгая обработка чанка','Longest chunk processing'),(p.work/1000).toFixed(2)+L(' мс',' ms'));"
-"h+=R(L('Самое долгое ожидание чанка','Longest chunk wait'),(p.wait/1000).toFixed(2)+L(' мс',' ms'));"
-"h+=R(L('Потеряно за секунду','Lost in the last second'),p.lost?f(p.lost,'bad'):'0');"
-"var wn=['/spectrum','/scope','/stat'];"
-"for(var k=0;k<3;k++)h+=R(L('Запрос ','Request ')+wn[k],p.wcnt[k]+L(' за с, самый долгий ','/s, longest ')+"
-"(p.wmax[k]/1000).toFixed(1)+L(' мс',' ms'));"
-"h+=R(L('Свободно внутр. памяти','Free internal memory'),(p.heap/1024).toFixed(0)+L(' КБ (минимум ',' KB (minimum ')+"
-"(p.hmin/1024).toFixed(0)+L(' КБ)',' KB)'));"
-"h+=R(L('Сигнал WiFi','WiFi signal'),p.rssi?p.rssi+L(' дБм',' dBm'):L('нет связи с роутером','no connection to the router'));"
-/* такты процессора на отсчёт по этапам против бюджета 240 МГц / частота:
-   видно, хватает ли ядра на эту частоту и что в обработке дороже всего */
-"if(j.cyc&&j.fhz){var bud=240e6/j.fhz,cs=(j.cyc[0]+j.cyc[1]+j.cyc[2])/100;"
-"h+=R(L('Такты на отсчёт (спектр)','CPU cycles per sample (spectrum)'),cs>0?"
-"L('копия ','copy ')+(j.cyc[0]/100).toFixed(2)+L(' + разность ',' + difference ')+(j.cyc[1]/100).toFixed(2)+"
-"L(' + порог и события ',' + threshold and events ')+(j.cyc[2]/100).toFixed(2)+' = '+"
-"f(cs.toFixed(2),cs>bud*0.9?'bad':(cs>bud*0.75?'warn':'ok'))+L(' из ',' of ')+bud.toFixed(1):"
-"L('спектр сейчас не обрабатывается','the spectrum is not being processed now'))}"
-"h+='</table>';"
-/* Журнал потерь: что делал веб в момент потери чанка. Если потери
-   совпадают с запросами - виноват веб, если нет - обработка. */
-"var wn2=[L('нет','none'),'/spectrum','/scope','/stat'];"
-"if(j.ev&&j.ev.length){"
-"h+='<h4>'+L('Журнал потерь чанков','Chunk loss log')+'</h4><table><tr><th>'+L('Время','Time')+'</th><th>'+"
-"L('Потеряно','Lost')+'</th><th>'+L('Очередь','Queue')+'</th><th>'+L('Шёл запрос','Request in progress')+'</th><th>'+"
-"L('Длился','Took')+'</th><th>'+L('Обработка','Processing')+'</th><th>'+L('Режим','Mode')+'</th></tr>';"
-"j.ev.forEach(function(e){"
-"h+='<tr><td>'+(e[0]/1000).toFixed(1)+L(' с',' s')+'</td><td>'+e[1]+'</td><td>'+e[2]+'</td>'+"
-"'<td>'+(wn2[e[3]]||'?')+'</td><td>'+(e[4]/1000).toFixed(1)+L(' мс',' ms')+'</td><td>'+"
-"(e[5]/1000).toFixed(2)+L(' мс',' ms')+'</td><td>'+"
-"(e[6]==1||e[6]==3?L('осциллограф','scope'):L('спектр','spectrum'))+'</td></tr>'});"
-"h+='</table>'}"
-"else h+='<p style=opacity:.6>'+L('Потерь чанков не было.','No chunk losses.')+'</p>';"
-"}"
-"if(j.stats){"
-"h+='<table><tr><th>'+L('Бит','Bit')+'</th><th>'+L('Переключений','Toggles')+'</th><th>'+L('Состояние','State')+'</th></tr>';"
-"var nm=['D0','D1','D2','D3','D4','D5','D6','D7','D8','D9','D10','D11','OTR'];"
-"for(var b=0;b<13;b++){var st='',c='ok';"
-"if(j.a1&(1<<b)){st=L('всегда 1','always 1');c='bad'}"
-"else if(j.a0&(1<<b)){st=L('всегда 0','always 0');c='bad'}"
-"else st=L('меняется','toggling');"
-"h+='<tr><td>'+nm[b]+'</td><td>'+j.tg[b]+'</td><td>'+f(st,c)+'</td></tr>'}"
-"h+='</table>';"
-"h+='<table><tr><th>'+L('Значения в чанке','Values in the chunk')+'</th><th></th></tr>';"
-"h+=R('min / max',j.vmin+' / '+j.vmax);"
-"h+=R(L('среднее','mean'),j.vmean);"
-"h+=R(L('размах','range'),j.vmax-j.vmin);"
-"h+=R(L('OTR (переполнение)','OTR (overflow)'),j.otr>0?f(j.otr,'warn'):j.otr);"
-"h+=R(L('проанализировано','analysed'),j.an+L(' отсчётов',' samples'));"
-"h+='</table>'}"
-"else h+='<p style=opacity:.6>'+L('Побитовая статистика выключена.','Per-bit statistics are off.')+'</p>';"
-"document.getElementById('out').innerHTML=h})}"
-"function probe(){document.getElementById('pr').textContent=L('измеряю 4 с...','measuring 4 s...');"
-"fetch('/diag/probe').then(r=>r.json()).then(function(j){"
-"var nm=['D0','D1','D2','D3','D4','D5','D6','D7','D8','D9','D10','D11','OTR'];"
-"var h='<table><tr><th>'+L('Линия','Line')+'</th><th>'+L('Состояние','State')+'</th></tr>';var live=0;"
-"for(var b=0;b<13;b++){var st,c;"
-"if(j.ch&(1<<b)){st=L('меняется','toggling');c='ok';live++}"
-"else if(j.hi&(1<<b)){st=L('залипла в 1','stuck at 1');c='bad'}"
-"else st=L('залипла в 0','stuck at 0'),c='bad';"
-"h+='<tr><td>'+nm[b]+'</td><td>'+f(st,c)+'</td></tr>'}h+='</table>';"
-"h+=live?f(L('Активных линий: ','Active lines: ')+live+L(' — АЦП преобразует',' — the ADC is converting'),'ok'):"
-"f(L('НИ ОДНА линия не шевелится — АЦП не преобразует. Смотрите питание платы и приходит ли на неё такт.',"
-"'NOT A SINGLE line is changing — the ADC is not converting. Check the board power and whether the clock reaches it.'),'bad');"
-"document.getElementById('pr').innerHTML=h})}"
-"setInterval(upd,1000);upd();"
-"</script></body></html>";
-
-static esp_err_t h_diag_page(httpd_req_t *r)
-{
-    httpd_resp_set_type(r, "text/html; charset=utf-8");
-    return httpd_resp_send(r, DIAG_PAGE, HTTPD_RESP_USE_STRLEN);
-}
 
 static esp_err_t h_diag_data(httpd_req_t *r)
 {
@@ -2263,7 +2258,7 @@ static esp_err_t h_diag_set(httpd_req_t *r)
 
 /* ---- справка по параметрам ---- */
 static const char HELP_PAGE[] =
-SUB_HEAD("Справка", "Help") SUB_NAV(N_DIAG, N_WIFI, N_HELP_ON)
+SUB_HEAD("Справка", "Help") SUB_NAV(N_WIFI, N_HELP_ON)
 "<style>td:first-child{white-space:nowrap;font-weight:600;width:1%}"
 "table{margin:4px 0 14px}</style>"
 "<div class=wrap><section class='panel pad' style=max-width:920px>"
@@ -2275,7 +2270,7 @@ SUB_HEAD("Справка", "Help") SUB_NAV(N_DIAG, N_WIFI, N_HELP_ON)
 "<tr><th>Параметр</th><th>Что делает</th></tr>"
 "<tr><td>Порог<br><code>threshold</code></td><td>На сколько кодов АЦП "
 "отсчёт должен превысить базовую линию, чтобы считаться событием. "
-"Ставится чуть выше шума &mdash; посмотрите шум на вкладке «Конфиг MCA».</td></tr>"
+"Ставится чуть выше шума &mdash; посмотрите шум на вкладке «Осциллограф».</td></tr>"
 "<tr><td>Полярность<br><code>polarity</code></td><td>0 &mdash; импульсы "
 "вверх от базовой линии, 1 &mdash; вниз (например, анод ФЭУ напрямую). "
 "При 1 сигнал переворачивается ещё до обработки: порог и спектр "
@@ -2398,7 +2393,7 @@ SUB_HEAD("Справка", "Help") SUB_NAV(N_DIAG, N_WIFI, N_HELP_ON)
 "N42 (ANSI N42.42) и SPE (SpectraLine). "
 "Выгружаются каналы, видимые на экране; время замера берётся из часов "
 "компьютера &mdash; своих часов у прибора нет. Под галочкой «настройки» "
-"&mdash; та же таблица параметров обработки, что на «Конфиг MCA»: их можно "
+"&mdash; та же таблица параметров обработки, что на «Осциллографе»: их можно "
 "менять прямо во время набора и смотреть, как меняется спектр. Смена "
 "«Кодов на канал» и способа измерения очищает спектр, смена L, G и "
 "полярности перезапускает фильтр. Ниже &mdash; мониторинг CPS: история за "
@@ -2410,7 +2405,7 @@ SUB_HEAD("Справка", "Help") SUB_NAV(N_DIAG, N_WIFI, N_HELP_ON)
 "к окну и текущему моменту. CPS интервала &mdash; импульсы, делённые "
 "на время, пока реально шёл набор; &delta; &mdash; статистическая погрешность "
 "1/&radic;N. Время прибора берётся по SNTP или от браузера.</td></tr>"
-"<tr><td>Конфиг MCA</td><td>Осциллограф и настройки обработки. Сырые отсчёты с синхронизацией "
+"<tr><td>Осциллограф</td><td>Осциллограф и настройки обработки. Сырые отсчёты с синхронизацией "
 "по фронту: как только сигнал вырос за 8 отсчётов не меньше чем на "
 "«синхр. по фронту», момент срабатывания ставится на пятую часть "
 "экрана (синяя метка), и импульс стоит на месте. Переключатель "
@@ -2440,6 +2435,12 @@ SUB_HEAD("Справка", "Help") SUB_NAV(N_DIAG, N_WIFI, N_HELP_ON)
 "(2048) или в настоящих кодах АЦП. «Вся шкала» показывает весь диапазон "
 "АЦП, а строка «запас по шкале» &mdash; сколько кодов осталось от базы "
 "до потолка и до пола.</td></tr>"
+"<tr><td>Диагностика</td><td>Галочка «диагностика» на вкладках «Спектр» и "
+"«Осциллограф» показывает под графиком тракт АЦП: поток отсчётов и его "
+"реальную скорость, регистры камерного интерфейса, профиль за последнюю "
+"секунду (занятость обработки, такты на отсчёт, запросы, память, сигнал "
+"WiFi), журнал потерь чанков, побитовую статистику линий данных и их "
+"проверку. Отдельной страницы больше нет.</td></tr>"
 "</table></div>"
 
 "<div class=le>"
@@ -2448,7 +2449,7 @@ SUB_HEAD("Справка", "Help") SUB_NAV(N_DIAG, N_WIFI, N_HELP_ON)
 "<tr><th>Parameter</th><th>What it does</th></tr>"
 "<tr><td>Threshold<br><code>threshold</code></td><td>How many ADC codes a sample "
 "must exceed the baseline by to count as an event. Set just above the noise &mdash; "
-"look at the noise on the “MCA config” tab.</td></tr>"
+"look at the noise on the “Oscilloscope” tab.</td></tr>"
 "<tr><td>Polarity<br><code>polarity</code></td><td>0 &mdash; pulses go up from the "
 "baseline, 1 &mdash; down (for example, PMT anode directly). With 1 the signal is "
 "inverted before processing: the threshold and spectrum work as with upward pulses, "
@@ -2557,8 +2558,8 @@ SUB_HEAD("Справка", "Help") SUB_NAV(N_DIAG, N_WIFI, N_HELP_ON)
 "BecqMoni), CSV (channel and count), N42 (ANSI N42.42) and SPE (SpectraLine). The "
 "channels visible on screen are exported; the measurement time is taken from the "
 "computer clock &mdash; the device has no clock of its own. Under the "
-"“settings” checkbox is the same processing parameter table as on “MCA "
-"config”: the parameters can be changed right during acquisition to see how "
+"“settings” checkbox is the same processing parameter table as on the "
+"“Oscilloscope” tab: the parameters can be changed right during acquisition to see how "
 "the spectrum changes. Changing “Codes per channel” or the method clears the "
 "spectrum, changing L, G or polarity restarts the filter. Below is the CPS "
 "monitor: a 6-hour history at one sample per second is kept in the device and "
@@ -2570,7 +2571,7 @@ SUB_HEAD("Справка", "Help") SUB_NAV(N_DIAG, N_WIFI, N_HELP_ON)
 "of an interval is the counts divided by the time acquisition actually ran; "
 "&delta; is the statistical error 1/&radic;N. The device time comes from SNTP "
 "or from the browser.</td></tr>"
-"<tr><td>MCA config</td><td>Oscilloscope and processing settings. Raw samples with "
+"<tr><td>Oscilloscope</td><td>Oscilloscope and processing settings. Raw samples with "
 "edge triggering: as soon as the signal rises by at least “trigger on edge” within "
 "8 samples, the trigger point is placed at one fifth of the screen (blue mark), and "
 "the pulse stays in place. The <b>Auto</b> / <b>Normal</b> switch: in auto, with no "
@@ -2596,6 +2597,12 @@ SUB_HEAD("Справка", "Help") SUB_NAV(N_DIAG, N_WIFI, N_HELP_ON)
 "middle of the scale (2048) or in true ADC codes. “Full scale” shows the whole ADC "
 "range, and the “headroom from baseline” line shows how many codes are left from the "
 "baseline to the ceiling and the floor.</td></tr>"
+"<tr><td>Diagnostics</td><td>The “diagnostics” checkbox on the “Spectrum” and "
+"“Oscilloscope” tabs shows the ADC path under the plot: the sample stream and "
+"its real rate, camera interface registers, the last-second profile "
+"(processing busy time, cycles per sample, requests, memory, WiFi signal), "
+"the chunk loss log, per-bit statistics of the data lines and their check. "
+"There is no separate page any more.</td></tr>"
 "</table></div>"
 
 "</section></div></body></html>";
@@ -2949,7 +2956,6 @@ esp_err_t mca_web_start(void)
         URI("/wifi/status", h_wifi_status, NULL),
         URI("/wifi/set", h_wifi_set, NULL),
         URI("/net/set", h_net_set, NULL),
-        URI("/diag", h_diag_page, NULL),
         URI("/diag/data", h_diag_data, NULL),
         URI("/diag/set", h_diag_set, NULL),
         URI("/diag/probe", h_diag_probe, NULL),

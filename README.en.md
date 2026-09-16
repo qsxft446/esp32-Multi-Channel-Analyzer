@@ -66,7 +66,7 @@ AD9226 board (connector P2) → ESP32-S3:
 wire between the boards.
 
 **D0–D11 are consecutive on GPIO6–17.** LCD_CAM itself does not care about
-the order, but the data-line check on the diagnostics page reads the port
+the order, but the data-line check in diagnostics reads the port
 with a single instruction.
 
 **The GPIO5 → GPIO18 jumper is required:** CLK is output on GPIO5, and the
@@ -140,7 +140,7 @@ analyzer.
 
 - **Port** — UART0: the “UART”/COM connector of the board (USB-UART
   bridge), not the native USB. Settings `8 N 1`.
-- **Enabling** — “MCA config” → settings → “MCA emulation on COM”: “off” or
+- **Enabling** — “Oscilloscope” → settings → “MCA emulation on COM”: “off” or
   a baud rate
   `38400 | 115200 | 460800 | 600000 | 921600`. Takes effect immediately and
   is saved. The whole spectrum fits into one second only at 460800 and
@@ -202,7 +202,7 @@ BecqMoni (answers to commands).
   selected peak (centroid, FWHM, resolution), file export: XML
   (ResultDataFile, opens in BecqMoni), CSV (channel, count), N42
   (ANSI N42.42), SPE (SpectraLine). Under the “settings” checkbox is the
-  same processing parameter table as on “MCA config”: the parameters can be
+  same processing parameter table as on the “Oscilloscope” tab: the parameters can be
   changed right during acquisition to see how the spectrum changes.
 - **CPS monitor** — on the same tab, below the spectrum: current CPS, mean
   over the whole history with its error, last interval, a plot by averaging
@@ -224,7 +224,7 @@ BecqMoni (answers to commands).
   than 2 s (and repeats hourly). The time and its source are shown in the
   monitor header; a spectrum export without a time from the page takes it
   from the device clock.
-- **MCA config** — oscilloscope with edge triggering (auto
+- **Oscilloscope** — edge triggering (auto
   and normal modes, time base 64–32768 samples, amplitude triggering —
   “amplitude from–to”: show only pulses whose height above
   the baseline is within the given range of ADC codes, X axis in µs or in
@@ -235,10 +235,11 @@ BecqMoni (answers to commands).
 - **Start/Stop apply to the open tab:** on “Spectrum” — spectrum acquisition
   (together with “Reset”, the status line and acquisition
   time/CPS/events; the time runs only while the spectrum is being
-  acquired), on “MCA config” — only the oscilloscope: pause holds the last
+  acquired), on “Oscilloscope” — only the oscilloscope: pause holds the last
   frame and does not touch spectrum acquisition. The firmware turns ADC
   capture on by itself when the open tab needs it.
-- **Diagnostics** (`/diag`) — sample stream and its real
+- **Diagnostics** — the “diagnostics” checkbox next to “settings” on both
+  tabs (there is no separate page any more): sample stream and its real
   rate, per-bit statistics of the data lines, last-second profile
   (including processing busy time and CPU cycles per sample by stage —
   copy, difference, threshold and events — against the budget of
@@ -561,7 +562,7 @@ pre-allocated memory.
 By default the profile is not printed to the console — only the line
 `потеряно чанков: N, при последней потере шёл /…` (chunks lost: N, the
 request in progress at the last loss was /…), and only in the second when
-losses happened. The “Diagnostics” page always shows the
+losses happened. Under the “diagnostics” checkbox the page always shows the
 profile. To enable printing: `#define MCA_PROF_LOG 1` in
 `main/mca_config.h`. Then every second:
 
@@ -588,7 +589,7 @@ which request was being served at that moment and for how long.
 
 ## Bring-up on new hardware
 
-1. Frequency 1–2 MHz, “MCA config” tab, “Auto” mode,
+1. Frequency 1–2 MHz, “Oscilloscope” tab, “Auto” mode,
    Start. Feed something known to the input. Expect a sensible trace. If
    the data is all zeros — check the GPIO5→GPIO18 jumper and the R32–R35
    jumpers on the AD9226 board. If there are no chunks while PCLK is alive,
