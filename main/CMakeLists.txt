@@ -13,6 +13,7 @@ idf_component_register(
          "mca_hist.c"
          "mca_time.c"
     INCLUDE_DIRS "."
+    EMBED_FILES "logo.png"
     REQUIRES driver esp_driver_gpio esp_driver_ledc esp_driver_spi
              esp_driver_uart
              esp_hw_support esp_http_server esp_wifi esp_eth nvs_flash

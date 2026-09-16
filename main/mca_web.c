@@ -169,7 +169,7 @@ static const char PAGE[] =
 "<!DOCTYPE html><html lang=ru><head><meta charset=utf-8>"
 "<meta name=viewport content='width=device-width,initial-scale=1'>"
 "<title>MCA · AD9226</title><link rel=stylesheet href=/s.css><script src=/l.js></script></head><body>"
-"<header><div class=brand><img src=/logo.svg alt=''>MCA "
+"<header><div class=brand><img src=/logo.png?v=2 alt=''>MCA "
 "<span style=color:var(--accent)>AD9226</span></div>"
 "<div class=chips><span class=chip id=runchip><span class='dot off' id=rundot></span>"
 "<span id=runtxt data-en='no connection'>нет связи</span></span><span class=chip id=fchip>&mdash;</span>"
@@ -1957,7 +1957,7 @@ static void net_init(void)
 "<meta name=viewport content='width=device-width,initial-scale=1'>" \
 "<title data-en='" TITLE_EN " · MCA'>" TITLE " · MCA</title>" \
 "<link rel=stylesheet href=/s.css><script src=/l.js></script></head><body>" \
-"<header><div class=brand><img src=/logo.svg alt=''>MCA " \
+"<header><div class=brand><img src=/logo.png?v=2 alt=''>MCA " \
 "<span style=color:var(--accent)>AD9226</span></div>" \
 "<div class=chips><span class='seg lng'><button onclick=\"setLang('ru')\">RU</button>" \
 "<button onclick=\"setLang('en')\">EN</button></span></div></header>"
@@ -2912,31 +2912,17 @@ static esp_err_t h_ljs(httpd_req_t *r)
     return httpd_resp_send(r, LJS, HTTPD_RESP_USE_STRLEN);
 }
 
-/* ЛОГОТИП - свой, векторный: атом с тремя орбиталями, в ядре - импульс
- * детектора (быстрый фронт, экспоненциальный спад). Орбиты с разрывами и
- * электронами, в центре не точка - чтобы не походить на известные значки.
- * Около 1 КБ вместо прежней картинки PNG на 23 КБ (её происхождение было
- * неизвестно - из проекта убрана). Цвета - как у страницы. */
-static const char LOGO_SVG[] =
-"<svg xmlns='http://www.w3.org/2000/svg' width='64' height='64' viewBox='0 0 64 64'>"
-"<g fill='none' stroke='#34d3c0' stroke-width='2.2' stroke-linecap='round'>"
-"<ellipse cx='32' cy='32' rx='27' ry='9.5' stroke-dasharray='104 23' stroke-dashoffset='8'/>"
-"<ellipse cx='32' cy='32' rx='27' ry='9.5' stroke-dasharray='104 23' stroke-dashoffset='50' transform='rotate(60 32 32)'/>"
-"<ellipse cx='32' cy='32' rx='27' ry='9.5' stroke-dasharray='104 23' stroke-dashoffset='92' transform='rotate(120 32 32)'/>"
-"</g>"
-"<circle cx='32' cy='32' r='14' fill='#0a0c0a'/>"
-"<polyline points='19.5,38 25.5,38 28,23.5 30.5,29.5 33.5,33.5 37,35.8 41,37.2 45,37.8' fill='none' "
-"stroke='#ff8c1a' stroke-width='2.6' stroke-linejoin='round' stroke-linecap='round'/>"
-"<g fill='#e8efe2'><circle cx='5' cy='32' r='2.8'/><circle cx='45.5' cy='55.4' r='2.8'/>"
-"<circle cx='45.5' cy='8.6' r='2.8'/></g>"
-"</svg>";
+/* Логотип вшит в прошивку (EMBED_FILES в CMakeLists.txt). */
+extern const uint8_t logo_png_start[] asm("_binary_logo_png_start");
+extern const uint8_t logo_png_end[]   asm("_binary_logo_png_end");
 
 static esp_err_t h_logo(httpd_req_t *r)
 {
-    httpd_resp_set_type(r, "image/svg+xml");
+    httpd_resp_set_type(r, "image/png");
     /* между прошивками не меняется - пусть браузер держит его в кэше */
     httpd_resp_set_hdr(r, "Cache-Control", "max-age=86400");
-    return httpd_resp_send(r, LOGO_SVG, HTTPD_RESP_USE_STRLEN);
+    return httpd_resp_send(r, (const char *)logo_png_start,
+                           logo_png_end - logo_png_start);
 }
 
 esp_err_t mca_web_start(void)
@@ -2960,7 +2946,7 @@ esp_err_t mca_web_start(void)
         URI("/", h_root, NULL),
         URI("/s.css", h_css, NULL),
         URI("/l.js", h_ljs, NULL),
-        URI("/logo.svg", h_logo, NULL),
+        URI("/logo.png", h_logo, NULL),
         URI("/spectrum", h_spectrum, NULL),
         URI("/scope", h_scope, NULL),
         URI("/stat", h_stat, NULL),
