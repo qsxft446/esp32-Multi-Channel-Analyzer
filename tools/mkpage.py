@@ -18,7 +18,6 @@ import math
 import os
 import random
 import re
-import shutil
 import sys
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
@@ -166,7 +165,11 @@ html = html.replace("id=pkb type=number value=0",
 
 os.makedirs(os.path.dirname(OUT), exist_ok=True)
 open(OUT, 'w', encoding='utf-8').write(html)
-shutil.copyfile(os.path.join(ROOT, 'main', 'logo.png'),
-                os.path.join(os.path.dirname(OUT), 'logo.png'))
+# логотип - SVG из той же прошивки (LOGO_SVG)
+mg = re.search(r'static const char LOGO_SVG\[\]\s*=(.*?);\n', clean, re.S)
+if mg:
+    svg = ''.join(re.findall(r'"((?:[^"\\]|\\.)*)"', mg.group(1)))
+    open(os.path.join(os.path.dirname(OUT), 'logo.svg'), 'w',
+         encoding='utf-8').write(svg)
 print(f'записано: {OUT} ({len(html)} байт)')
 print(f'в спектре заложен пик: центр {CEN}, FWHM {2.3548*SIG:.2f} канала')
