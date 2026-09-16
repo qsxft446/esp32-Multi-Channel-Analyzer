@@ -7,6 +7,7 @@
 #include "mca_diag.h"
 #include "mca_eth.h"
 #include "mca_emu.h"
+#include "scope_codec.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -643,7 +644,10 @@ static const char PAGE[] =
 "'<span style=color:#f0c45a>'+(AF()?L('импульсов с амплитудой ','no pulses with amplitude ')+AF()+L(' кодов',' codes'):"
 "L('фронта &ge; ','no edge &ge; ')+j.lvl+L(' кодов',' codes'))+"
 "L(' нет &mdash; свободный пуск',' &mdash; free run')+'</span>';"
-"if(wait&&j.age>1500)sy+=' &nbsp;<span style=opacity:.7>'+L('снимок ','captured ')+(j.age/1000).toFixed(0)+L(' с назад',' s ago')+'</span>';"
+/* возраст снимка - с поправкой на время с его прихода (по WebSocket
+   старый кадр не повторяется, страница перерисовывает его сама) */
+"var ag=j.age<0?-1:j.age+(j.rcv?Date.now()-j.rcv:0);"
+"if(wait&&ag>1500)sy+=' &nbsp;<span style=opacity:.7>'+L('снимок ','captured ')+(ag/1000).toFixed(0)+L(' с назад',' s ago')+'</span>';"
 /* высота показанного импульса и работа фильтра амплитуды */
 "if(j.amp>=0)sy+=' &nbsp;'+L('высота импульса','pulse height')+' <b>'+j.amp+'</b> '+L('кодов','codes');"
 "if(AF())sy+=' &nbsp;<span class=mut>'+L('фильтр ','filter ')+AF()+L(', отброшено с прошлого кадра ',', rejected since last frame ')+(j.rej||0)+'</span>';"
@@ -651,6 +655,8 @@ static const char PAGE[] =
 "L('<br>на экране ','<br>on screen ')+Wn+L(' отсч = ',' smp = ')+(Wn/fh*1e6).toFixed(1)+L(' мкс из ',' µs of ')+(j.len||a.length)+L(' отсч = ',' smp = ')+"
 "((j.len||a.length)/fh*1e6).toFixed(0)+L(' мкс записи',' µs recorded')+"
 "(window.SFPS?L(' &nbsp; обновление ',' &nbsp; refresh ')+window.SFPS.toFixed(1)+L(' раз/с','/s'):'')+"
+/* поток осциллографа и чем он идёт */
+"(window.SKBPS?' &nbsp; '+L('поток ','stream ')+window.SKBPS+L(' кбит/с',' kbit/s')+' ('+(WSOK?'WebSocket':'HTTP')+')':'')+"
 "L('<br>сигнал: мин ','<br>signal: min ')+mn+L('  макс ','  max ')+mx+L('  база ','  baseline ')+bl.toFixed(0)+L('  шум(СКО) ','  noise(RMS) ')+sd.toFixed(1)+"
 "((mx>=4095||mn<=0)?'  <b style=color:#ff8a82>'+L('упор в шкалу АЦП','ADC scale clipped')+'</b>':'')+"
 /* сколько места осталось от базы до потолка и пола шкалы */
@@ -839,22 +845,64 @@ static const char PAGE[] =
 "return {tg:v.getInt32(0,true),rise:v.getInt32(4,true),age:v.getInt32(8,true),"
 "lvl:v.getInt32(12,true),len:v.getInt32(16,true),amp:v.getInt32(20,true),"
 "rej:v.getInt32(24,true),d:d}}"
-"function sloop(){var md=document.getElementById('md').value;"
-"if(md!='1'&&md!='3'){window.SLAST=0;setTimeout(sloop,250);return}"
-/* пауза: прибор не опрашиваем, на экране последний кадр */
-"if(window.SRUN===0&&window.LASTJ){window.SLAST=0;window.SFPS=0;setTimeout(sloop,250);return}"
-"var t0=Date.now(),Wn=+document.getElementById('zm').value||512,"
+/* настройки осциллографа строкой - одни и те же для /scope и WebSocket */
+"function scq(){var Wn=+document.getElementById('zm').value||512,"
 "M=(+document.getElementById('p_trap_L').value|0)+(+document.getElementById('p_trap_G').value|0)+16;"
-"fetch('/scope?lvl='+(+document.getElementById('tl').value||30)+'&n='+(Wn+M)+'&pre='+(Math.round(Wn*0.2)+M)+"
-"'&amin='+(+document.getElementById('amin').value||0)+'&amax='+(+document.getElementById('amax').value||0))"
-".then(function(r){return r.arrayBuffer()}).then(function(b){"
-/* ответ мог прийти, когда уже открыт «Спектр» - тогда не рисуем */
-"if(b.byteLength>=28&&isScope())drawScope(sparse(b),md=='3');"
-/* фактическая частота обновления, сглаженная - показывается под графиком */
+"return 'lvl='+(+document.getElementById('tl').value||30)+'&n='+(Wn+M)+'&pre='+(Math.round(Wn*0.2)+M)+"
+"'&amin='+(+document.getElementById('amin').value||0)+'&amax='+(+document.getElementById('amax').value||0)}"
+/* Кадр WebSocket: 10 x int32 (как у /scope, плюс номер снимка, число
+   отсчётов и способ записи: 0 - uint16, 1 - сжатие), затем отсчёты.
+   Сжатие (scope_codec.c в прошивке): полубайты, старший первым; первый
+   отсчёт - 3 полубайта целиком, дальше разность -7..7 одним полубайтом,
+   полубайт 8 - следом отсчёт целиком (3 полубайта). */
+"function wdec(u,n){var d=new Array(n),p=0,m=u.length*2,i=0,x=0;"
+"function nb(){var b=u[p>>1],c=(p&1)?b&15:b>>4;p++;return c}"
+"if(n>0&&m>=3){x=(nb()<<8)|(nb()<<4)|nb();d[i++]=x;"
+"while(i<n&&p<m){var c=nb();if(c==8){if(p+3>m)break;x=(nb()<<8)|(nb()<<4)|nb()}else x+=c>7?c-16:c;d[i++]=x}}"
+"d.length=i;return d}"
+"function wparse(b){if(b.byteLength<40)return null;"
+"var v=new DataView(b),n=v.getInt32(32,true),e=v.getInt32(36,true),d;"
+"if(e==1)d=wdec(new Uint8Array(b,40),n);"
+"else{n=Math.min(n,(b.byteLength-40)>>1);d=new Array(n);for(var i=0;i<n;i++)d[i]=v.getUint16(40+2*i,true)}"
+"return {tg:v.getInt32(0,true),rise:v.getInt32(4,true),age:v.getInt32(8,true),lvl:v.getInt32(12,true),"
+"len:v.getInt32(16,true),amp:v.getInt32(20,true),rej:v.getInt32(24,true),seq:v.getInt32(28,true),d:d}}"
+/* Пришёл кадр (любым путём): нарисовать, если открыт осциллограф (ответ
+   мог прийти уже на «Спектре»), посчитать частоту кадров и поток. */
+"var SBYTES=0;"
+"function sframe(j,md,nb){SBYTES+=nb;if(!isScope())return;j.rcv=Date.now();drawScope(j,md=='3');"
 "var now=Date.now();if(window.SLAST)window.SFPS=(window.SFPS||1000/(now-window.SLAST))*0.8+200/(now-window.SLAST);"
-"window.SLAST=now})"
+"window.SLAST=now}"
+/* раз в секунду - поток в кбит/с; в ждущем режиме по WebSocket старые
+   кадры не повторяются, поэтому возраст снимка обновляем перерисовкой */
+"setInterval(function(){window.SKBPS=Math.round(SBYTES*8/1000);SBYTES=0;"
+"if(WSOK&&isScope()&&window.LASTJ&&window.LASTW)scRedraw()},1000);"
+/* WEBSOCKET: прибор сам шлёт новые кадры. Настройки уходят при изменении
+   и раз в 2 с (чтобы сервер не счёл соединение простаивающим). Не
+   открылся или оборвался - опрос /scope, новая попытка через 3 с. */
+"var WS=null,WSOK=0,WSQ='',WST=0;"
+"function wsOpen(){if(!window.WebSocket)return;"
+"try{WS=new WebSocket((location.protocol=='https:'?'wss://':'ws://')+location.host+'/ws')}catch(e){WS=null;return}"
+"WS.binaryType='arraybuffer';"
+"WS.onopen=function(){WSOK=1;WSQ=''};"
+"WS.onclose=function(){WSOK=0;WS=null;setTimeout(wsOpen,3000)};"
+"WS.onmessage=function(ev){if(typeof ev.data=='string')return;"
+"if(window.SRUN===0&&window.LASTJ)return;"
+"var j=wparse(ev.data);if(j)sframe(j,document.getElementById('md').value,ev.data.byteLength)}}"
+"function sloop(){var md=document.getElementById('md').value,sc=(md=='1'||md=='3'),"
+/* пауза: кадры не берём, на экране последний */
+"on=sc&&!(window.SRUN===0&&window.LASTJ);"
+"if(!on){window.SLAST=0;if(sc)window.SFPS=0}"
+"if(WSOK){var q=scq()+'&run='+(on?1:0),t=Date.now();"
+"if(q!=WSQ||t-WST>2000){try{WS.send(q);WSQ=q;WST=t}catch(e){}}"
+"setTimeout(sloop,100);return}"
+"if(!on){setTimeout(sloop,250);return}"
+/* без WebSocket - опрос: следующий запрос, как только отрисован
+   предыдущий, но не чаще раза в SPER мс */
+"var t0=Date.now();"
+"fetch('/scope?'+scq()).then(function(r){return r.arrayBuffer()}).then(function(b){"
+"if(b.byteLength>=28)sframe(sparse(b),md,b.byteLength)})"
 ".catch(function(){}).then(function(){setTimeout(sloop,Math.max(10,SPER-(Date.now()-t0)))})}"
-"setInterval(poll,1000);poll();sloop();"
+"setInterval(poll,1000);poll();wsOpen();sloop();"
 "</script></body></html>";
 
 /* ---------------- обработчики ---------------- */
@@ -908,6 +956,31 @@ static esp_err_t h_spectrum(httpd_req_t *r)
     return e;
 }
 
+/* Настройки осциллографа из строки запроса - одни и те же для /scope и
+ * для WebSocket: lvl - уровень синхронизации, n - сколько отсчётов нужно
+ * странице, pre - сколько из них до момента синхронизации, amin/amax -
+ * синхронизация по амплитуде (amax=0 - выкл). */
+static void scope_apply(const char *q, size_t *want, size_t *pre)
+{
+    char v[12];
+    if (httpd_query_key_value(q, "lvl", v, sizeof(v)) == ESP_OK)
+        mca_diag_set_trig_level(atoi(v));
+    if (httpd_query_key_value(q, "n", v, sizeof(v)) == ESP_OK) {
+        int x = atoi(v);
+        if (x > 0 && x <= DIAG_SCOPE_LEN) *want = (size_t)x;
+    }
+    if (httpd_query_key_value(q, "pre", v, sizeof(v)) == ESP_OK) {
+        int x = atoi(v);
+        if (x >= 0) *pre = (size_t)x;
+    }
+    int32_t lo = 0, hi = 0;
+    if (httpd_query_key_value(q, "amin", v, sizeof(v)) == ESP_OK)
+        lo = atoi(v);
+    if (httpd_query_key_value(q, "amax", v, sizeof(v)) == ESP_OK)
+        hi = atoi(v);
+    mca_diag_set_amp_window(lo, hi);
+}
+
 static esp_err_t h_scope(httpd_req_t *r)
 {
     /* Осциллограмма с синхронизацией по фронту. lvl в запросе -
@@ -917,27 +990,10 @@ static esp_err_t h_scope(httpd_req_t *r)
     /* n - сколько отсчётов нужно странице, pre - сколько из них до
      * момента синхронизации. Отдаём только кусок под развёртку: время
      * ответа растёт с его длиной (см. LWIP_TCP_SND_BUF_DEFAULT). */
-    char q[128], v[12];
+    char q[128];
     size_t want = DIAG_SCOPE_LEN, pre = DIAG_SCOPE_PRE;
-    if (httpd_req_get_url_query_str(r, q, sizeof(q)) == ESP_OK) {
-        if (httpd_query_key_value(q, "lvl", v, sizeof(v)) == ESP_OK)
-            mca_diag_set_trig_level(atoi(v));
-        if (httpd_query_key_value(q, "n", v, sizeof(v)) == ESP_OK) {
-            int x = atoi(v);
-            if (x > 0 && x <= DIAG_SCOPE_LEN) want = (size_t)x;
-        }
-        if (httpd_query_key_value(q, "pre", v, sizeof(v)) == ESP_OK) {
-            int x = atoi(v);
-            if (x >= 0) pre = (size_t)x;
-        }
-        /* синхронизация по амплитуде: amin..amax кодов, amax=0 - выкл */
-        int32_t lo = 0, hi = 0;
-        if (httpd_query_key_value(q, "amin", v, sizeof(v)) == ESP_OK)
-            lo = atoi(v);
-        if (httpd_query_key_value(q, "amax", v, sizeof(v)) == ESP_OK)
-            hi = atoi(v);
-        mca_diag_set_amp_window(lo, hi);
-    }
+    if (httpd_req_get_url_query_str(r, q, sizeof(q)) == ESP_OK)
+        scope_apply(q, &want, &pre);
     /* прибор соберёт окно ровно под эту развёртку */
     mca_diag_set_scope_want(want, pre);
 
@@ -958,7 +1014,7 @@ static esp_err_t h_scope(httpd_req_t *r)
     size_t full = 0;
     const uint16_t *d = NULL;
     size_t n = mca_diag_scope_acquire(want, pre, &d, &tg, &rise, &age, &full,
-                                      &amp, &rej);
+                                      &amp, &rej, NULL);
 
     const int32_t h[7] = { tg, rise, age, mca_diag_get_trig_level(),
                            (int32_t)full, amp, (int32_t)rej };
@@ -1103,6 +1159,158 @@ static esp_err_t h_cmd(httpd_req_t *r)
         else if (!strcmp(v, "clear"))       mca_cmd_clear = true;
     }
     return httpd_resp_sendstr(r, "ok");
+}
+
+/* ---------------- ОСЦИЛЛОГРАФ ПО WEBSOCKET ----------------
+ * Страница открывает /ws и присылает туда текстом те же настройки, что
+ * и в /scope, плюс run=0|1 (открыта ли вкладка осциллографа и не на паузе
+ * ли он). Прибор сам шлёт кадр, как только снимок НОВЫЙ и предыдущий
+ * кадр ушёл, не чаще 20 раз в секунду. Раньше страница опрашивала /scope
+ * и получала снимок, даже если он не менялся: в ждущем режиме по сети
+ * гонялся один и тот же кадр до 66 КБ.
+ *
+ * Кадр - одно двоичное сообщение: 10 x int32 (tg, rise, age, lvl, длина
+ * окна, высота импульса, отброшено фильтром, номер снимка, число
+ * отсчётов, способ записи: 0 - uint16, 1 - сжатие scope_codec), затем
+ * отсчёты. Сжатие без потерь уменьшает кадр в 3.5-4 раза. Сообщение
+ * режется на куски по 4 КБ (фрагменты WebSocket) - буфер во внутренней
+ * памяти небольшой, а сжатие идёт на лету.
+ *
+ * Отправка - в задаче веб-сервера (httpd_queue_work): так она не
+ * пересекается с его собственными служебными кадрами на том же сокете.
+ * Если WebSocket не открылся, страница опрашивает /scope, как раньше. */
+#define WS_HDR      40          /* 10 x int32                          */
+#define WS_MIN_US   50000       /* не чаще 20 кадров в секунду          */
+#define WS_ENC_RAW  0
+#define WS_ENC_NIB  1
+
+static httpd_handle_t    s_srv;
+static volatile int      s_ws_fd = -1;      /* клиент осциллографа        */
+static volatile bool     s_ws_run;          /* ему нужны кадры            */
+static volatile bool     s_ws_busy;         /* кадр в очереди или уходит  */
+static volatile bool     s_ws_force;        /* отдать снимок, даже старый */
+static volatile size_t   s_ws_want = DIAG_SCOPE_LEN;
+static volatile size_t   s_ws_pre  = DIAG_SCOPE_PRE;
+static uint32_t          s_ws_seq;          /* номер отправленного снимка */
+static bool              s_codec_ok;
+static uint8_t           s_ws_out[4096];    /* кусок сообщения            */
+
+static void ws_send_scope(void *arg)
+{
+    const int fd = s_ws_fd;
+    if (fd < 0 ||
+        httpd_ws_get_fd_info(s_srv, fd) != HTTPD_WS_CLIENT_WEBSOCKET) {
+        if (fd == s_ws_fd) s_ws_fd = -1;
+        s_ws_busy = false;
+        return;
+    }
+    mca_prof_web_begin(PROF_EP_SCOPE);
+
+    int32_t tg = -1, rise = 0, age = -1, amp = -1;
+    uint32_t rej = 0, seq = 0;
+    size_t full = 0;
+    const uint16_t *d = NULL;
+    const size_t n = mca_diag_scope_acquire(s_ws_want, s_ws_pre, &d, &tg,
+                                            &rise, &age, &full, &amp, &rej,
+                                            &seq);
+    const bool force = s_ws_force;
+    s_ws_force = false;
+
+    esp_err_t e = ESP_OK;
+    if (seq != s_ws_seq || force) {
+        const int32_t enc = s_codec_ok ? WS_ENC_NIB : WS_ENC_RAW;
+        const int32_t h[10] = { tg, rise, age, mca_diag_get_trig_level(),
+                                (int32_t)full, amp, (int32_t)rej,
+                                (int32_t)seq, (int32_t)n, enc };
+        memcpy(s_ws_out, h, WS_HDR);
+
+        scodec_t cs = { 0 };
+        size_t off = WS_HDR, pos = 0;
+        bool first = true;
+        for (;;) {
+            size_t used = 0;
+            if (n && enc == WS_ENC_NIB) {
+                pos += scodec_encode(&cs, d + pos, n - pos, s_ws_out + off,
+                                     sizeof(s_ws_out) - off, &used);
+                if (pos >= n) used += scodec_finish(&cs, s_ws_out + off + used);
+            } else if (n) {
+                size_t k = (sizeof(s_ws_out) - off) / sizeof(uint16_t);
+                if (k > n - pos) k = n - pos;
+                memcpy(s_ws_out + off, d + pos, k * sizeof(uint16_t));
+                pos  += k;
+                used  = k * sizeof(uint16_t);
+            }
+            const bool last = pos >= n;
+            httpd_ws_frame_t fr = {
+                .final      = last,
+                .fragmented = true,
+                .type       = first ? HTTPD_WS_TYPE_BINARY
+                                    : HTTPD_WS_TYPE_CONTINUE,
+                .payload    = s_ws_out,
+                .len        = off + used,
+            };
+            e = httpd_ws_send_frame_async(s_srv, fd, &fr);
+            first = false;
+            off   = 0;
+            if (e != ESP_OK || last) break;
+        }
+        if (e == ESP_OK) s_ws_seq = seq;
+    }
+    mca_diag_scope_release();
+
+    if (e != ESP_OK && fd == s_ws_fd) s_ws_fd = -1;   /* клиент ушёл */
+    mca_prof_web_end(PROF_EP_SCOPE);
+    s_ws_busy = false;
+}
+
+/* Раз в 10 мс: есть ли кому и что отправить. Сам кадр собирает и шлёт
+ * задача веб-сервера. */
+static void ws_task(void *arg)
+{
+    int64_t last = 0;
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(10));
+        if (s_ws_fd < 0 || !s_ws_run || s_ws_busy) continue;
+        if (!s_ws_force && mca_diag_scope_seq() == s_ws_seq) continue;
+        const int64_t now = esp_timer_get_time();
+        if (now - last < WS_MIN_US) continue;
+        last = now;
+        s_ws_busy = true;
+        if (httpd_queue_work(s_srv, ws_send_scope, NULL) != ESP_OK)
+            s_ws_busy = false;
+    }
+}
+
+static esp_err_t h_ws(httpd_req_t *r)
+{
+    if (r->method == HTTP_GET) {            /* рукопожатие */
+        s_ws_fd  = httpd_req_to_sockfd(r);
+        s_ws_run = false;                   /* до первых настроек */
+        return ESP_OK;
+    }
+    httpd_ws_frame_t f = { .type = HTTPD_WS_TYPE_TEXT };
+    esp_err_t e = httpd_ws_recv_frame(r, &f, 0);
+    if (e != ESP_OK) return e;
+    char q[160];
+    if (f.len >= sizeof(q)) return ESP_FAIL;    /* не наше - закрыть */
+    f.payload = (uint8_t *)q;
+    e = httpd_ws_recv_frame(r, &f, sizeof(q) - 1);
+    if (e != ESP_OK) return e;
+    q[f.len] = 0;
+    if (f.type != HTTPD_WS_TYPE_TEXT) return ESP_OK;
+
+    size_t want = DIAG_SCOPE_LEN, pre = DIAG_SCOPE_PRE;
+    scope_apply(q, &want, &pre);
+    s_ws_want = want;
+    s_ws_pre  = pre;
+    mca_diag_set_scope_want(want, pre);
+    int32_t run = 0;
+    if (q_int(q, "run", &run)) s_ws_run = run != 0;
+    /* кадры получает последний заговоривший клиент; новые настройки -
+     * сразу кадр, не дожидаясь следующего снимка */
+    s_ws_fd    = httpd_req_to_sockfd(r);
+    s_ws_force = true;
+    return ESP_OK;
 }
 
 /* ---------------- WiFi: постоянный хотспот для настройки ----------------
@@ -2452,32 +2660,49 @@ esp_err_t mca_web_start(void)
     esp_err_t err = httpd_start(&srv, &cfg);
     if (err != ESP_OK) return err;
 
+    /* именованные поля: при включённом WebSocket у httpd_uri_t есть ещё
+     * is_websocket и др., позиционная запись оставляла их без значения */
+#define URI(p, h, c) { .uri = p, .method = HTTP_GET, .handler = h, .user_ctx = c }
     httpd_uri_t u[] = {
-        { "/",             HTTP_GET, h_root,        NULL },
-        { "/s.css",        HTTP_GET, h_css,         NULL },
-        { "/l.js",         HTTP_GET, h_ljs,         NULL },
-        { "/logo.png",     HTTP_GET, h_logo,        NULL },
-        { "/spectrum",     HTTP_GET, h_spectrum,    NULL },
-        { "/scope",        HTTP_GET, h_scope,       NULL },
-        { "/stat",         HTTP_GET, h_stat,        NULL },
-        { "/cfg",          HTTP_GET, h_cfg,         NULL },
-        { "/cmd",          HTTP_GET, h_cmd,         NULL },
-        { "/wifi",         HTTP_GET, h_wifi_page,   NULL },
-        { "/wifi/status",  HTTP_GET, h_wifi_status, NULL },
-        { "/wifi/set",     HTTP_GET, h_wifi_set,    NULL },
-        { "/net/set",      HTTP_GET, h_net_set,     NULL },
-        { "/diag",         HTTP_GET, h_diag_page,   NULL },
-        { "/diag/data",    HTTP_GET, h_diag_data,   NULL },
-        { "/diag/set",     HTTP_GET, h_diag_set,    NULL },
-        { "/diag/probe",   HTTP_GET, h_diag_probe,  NULL },
-        { "/help",         HTTP_GET, h_help,        NULL },
-        { "/export.xml",   HTTP_GET, h_export,      (void *)"xml" },
-        { "/export.csv",   HTTP_GET, h_export,      (void *)"csv" },
-        { "/export.n42",   HTTP_GET, h_export,      (void *)"n42" },
-        { "/export.spe",   HTTP_GET, h_export,      (void *)"spe" },
+        URI("/", h_root, NULL),
+        URI("/s.css", h_css, NULL),
+        URI("/l.js", h_ljs, NULL),
+        URI("/logo.png", h_logo, NULL),
+        URI("/spectrum", h_spectrum, NULL),
+        URI("/scope", h_scope, NULL),
+        URI("/stat", h_stat, NULL),
+        URI("/cfg", h_cfg, NULL),
+        URI("/cmd", h_cmd, NULL),
+        URI("/wifi", h_wifi_page, NULL),
+        URI("/wifi/status", h_wifi_status, NULL),
+        URI("/wifi/set", h_wifi_set, NULL),
+        URI("/net/set", h_net_set, NULL),
+        URI("/diag", h_diag_page, NULL),
+        URI("/diag/data", h_diag_data, NULL),
+        URI("/diag/set", h_diag_set, NULL),
+        URI("/diag/probe", h_diag_probe, NULL),
+        URI("/help", h_help, NULL),
+        URI("/export.xml", h_export, (void *)"xml"),
+        URI("/export.csv", h_export, (void *)"csv"),
+        URI("/export.n42", h_export, (void *)"n42"),
+        URI("/export.spe", h_export, (void *)"spe"),
     };
+#undef URI
     for (int i = 0; i < sizeof(u) / sizeof(u[0]); i++)
         httpd_register_uri_handler(srv, &u[i]);
+
+    /* осциллограф по WebSocket */
+    s_srv = srv;
+    static const httpd_uri_t ws = {
+        .uri = "/ws", .method = HTTP_GET, .handler = h_ws,
+        .user_ctx = NULL, .is_websocket = true,
+    };
+    httpd_register_uri_handler(srv, &ws);
+    s_codec_ok = scodec_selftest();
+    ESP_LOGI(TAG, "сжатие осциллограммы: %s", s_codec_ok
+             ? "самопроверка пройдена"
+             : "самопроверка НЕ пройдена - кадры идут без сжатия");
+    xTaskCreatePinnedToCore(ws_task, "ws_scope", 3072, NULL, 5, NULL, 0);
 
     ESP_LOGI(TAG, "веб-сервер запущен");
     return ESP_OK;

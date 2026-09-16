@@ -22,6 +22,8 @@ CONFIG_FREERTOS_USE_TICKLESS_IDLE=n
 # HTTP server
 CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
 CONFIG_HTTPD_MAX_URI_LEN=512
+# WebSocket: осциллограф шлётся сжатыми кадрами по /ws
+CONFIG_HTTPD_WS_SUPPORT=y
 
 # Оптимизация по скорости - важно для DSP-цикла
 CONFIG_COMPILER_OPTIMIZATION_PERF=y

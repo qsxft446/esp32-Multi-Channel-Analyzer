@@ -484,10 +484,24 @@ pre-allocated memory.
   window, and the device waits for the next edge. The height of the shown
   pulse and the number of dropped ones since the previous frame are printed
   under the plot.
-- The `/scope` response is binary (7 × int32 + uint16 samples), only the
-  part for the time base; the page polls again right after drawing, at
-  most every 50 ms (up to 20 frames per second), and the device prepares
-  snapshots at most every 25 ms.
+- **Frames go over WebSocket (`/ws`), losslessly compressed.** The page
+  sends its settings there (time base, level, amplitude, pause), and the
+  device pushes a frame only when the snapshot is new and the previous
+  frame has gone out, at most 20 times per second. The page used to poll
+  `/scope` and in normal mode got the same frame over and over; over
+  Ethernet (W5500) that was 3 Mbit/s at the 16384 time base and 4 Mbit/s
+  at 32768 — close to the module's SPI limit. Samples are sent as 4-bit
+  differences (`main/scope_codec.c`): a difference of −7…7 is one nibble,
+  otherwise an escape and the full sample. On the signal model a frame is
+  3.4–4 times smaller: 16384 — 33 → 8 KB, 32768 — 66 → 20 KB. The message
+  is cut into 4 KB pieces, so compression runs on the fly without a large
+  buffer. At start the device self-tests the codec; if that fails, frames
+  go uncompressed (the page understands both). Under the plot you can see
+  “stream … kbit/s” and which way it goes.
+- If the WebSocket does not open, the page polls `/scope` as before: the
+  response is binary (7 × int32 + uint16 samples), the next request right
+  after drawing, at most every 50 ms. The device prepares snapshots at
+  most every 25 ms.
 
 ### Other
 
@@ -566,10 +580,11 @@ which request was being served at that moment and for how long.
 
 ## Tools (`tools/`)
 
-- `test_dsp.py` — 8 levels of processing checks on a model, including the
-  vector version against the plain one. `python tools/test_dsp.py`.
-- `dspmodel.py`, `scopemodel.py` — models of the processing and the
-  oscilloscope.
+- `test_dsp.py` — 9 levels of processing checks on a model, including the
+  vector version against the plain one and the oscilloscope frame
+  compression against the page decoder (in node). `python tools/test_dsp.py`.
+- `dspmodel.py`, `scopemodel.py`, `scopecodec.py` — models of the
+  processing, the oscilloscope and its frame compression.
 - `hotloop.py` — hot-loop cycle estimate from the disassembly.
 - `mkpage.py` — builds `build/page_test.html` with the device page and stub
   responses; open with `python -m http.server 8777 --directory build`.

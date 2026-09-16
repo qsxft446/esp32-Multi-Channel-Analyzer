@@ -82,6 +82,8 @@ static int32_t  s_scope_trig = -1; /* индекс срабатывания, -1 
 static int32_t  s_scope_rise;
 static int64_t  s_scope_time;
 static volatile bool s_scope_rd;   /* веб копирует опубликованный снимок   */
+/* Номер опубликованного снимка: WebSocket шлёт кадр, только если он новый. */
+static volatile uint32_t s_scope_seq;
 
 /* Предыстория НЕ копится отдельным массивом: держим указатели на
  * DIAG_PRV_N предыдущих чанков прямо в буферах захвата. Раньше на каждый
@@ -311,6 +313,7 @@ static void cap_publish(int64_t now)
         s_scope_amp  = s_cap_amp;
         s_scope_rej  = s_rej;
         s_rej        = 0;
+        s_scope_seq++;
     }
     UNLOCK();
     s_sc = SC_IDLE;
@@ -614,7 +617,7 @@ void mca_diag_set_amp_window(int32_t lo, int32_t hi)
 size_t mca_diag_scope_acquire(size_t max, size_t pre, const uint16_t **data,
                               int32_t *trig_pos, int32_t *rise,
                               int32_t *age_ms, size_t *full_len,
-                              int32_t *amp, uint32_t *rej)
+                              int32_t *amp, uint32_t *rej, uint32_t *seq)
 {
     /* Снимок отдаётся БЕЗ блокировки и без копии: веб шлёт его в сеть
      * прямо из буфера. До mca_diag_scope_release поднят признак чтения:
@@ -629,6 +632,7 @@ size_t mca_diag_scope_acquire(size_t max, size_t pre, const uint16_t **data,
     const int64_t   tm  = s_scope_time;
     *amp = s_scope_amp;
     *rej = s_scope_rej;
+    if (seq) *seq = s_scope_seq;
     s_scope_rd = true;
     UNLOCK();
 
@@ -644,6 +648,8 @@ size_t mca_diag_scope_acquire(size_t max, size_t pre, const uint16_t **data,
     *age_ms   = tm ? (int32_t)((esp_timer_get_time() - tm) / 1000) : -1;
     return n;
 }
+
+uint32_t mca_diag_scope_seq(void) { return s_scope_seq; }
 
 void mca_diag_scope_release(void)
 {

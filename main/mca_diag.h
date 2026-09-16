@@ -86,8 +86,11 @@ size_t  mca_diag_scope_acquire(size_t max, size_t pre,
                                const uint16_t **data,
                                int32_t *trig_pos, int32_t *rise,
                                int32_t *age_ms, size_t *full_len,
-                               int32_t *amp, uint32_t *rej);
+                               int32_t *amp, uint32_t *rej, uint32_t *seq);
 void    mca_diag_scope_release(void);
+/* Номер последнего опубликованного снимка (seq в acquire - номер отданного;
+ * NULL - не нужен). Растёт на каждой публикации. */
+uint32_t mca_diag_scope_seq(void);
 /* Сколько отсчётов нужно странице (развёртка с запасом) и сколько из них
  * до момента синхронизации: окно собирается ровно такое (после фронта -
  * не меньше, чем нужно для измерения высоты импульса). */

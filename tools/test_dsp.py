@@ -388,6 +388,110 @@ a, b, ok = same(dirty, Params(polarity=1, algo=1), word_invert=True,
 check("оба ускорения вместе, интегрирование", ok,
       f"событий {len(a.events)}")
 
+# ------------------------------------------------------------------ L9
+print("\n=== УРОВЕНЬ 9: сжатие осциллограммы для WebSocket ===")
+print("  Прошивка (scope_codec.c) сжимает кадр кусками по 4 КБ, страница")
+print("  (wdec) расшифровывает. Модель прошивки - scopecodec.py; wdec берётся")
+print("  прямо из mca_web.c и гоняется в node. Всё обязано совпасть бит в бит.\n")
+import json
+import re
+import subprocess
+import tempfile
+import scopecodec
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import check_i18n as ci
+
+FS9 = 20e6
+
+
+def frame9(n, cps, noise, seed):
+    r = random.Random(seed)
+    ps, t = [], 100
+    while t < n - 10:
+        ps.append(t)
+        t += max(1, int(r.expovariate(cps / FS9)))
+    am = [r.choice((80, 300, 1000, 1500)) for _ in ps]
+    return make_pulse_train(n, am, ps, fs_hz=FS9, rise_ns=1300, tau_us=4.0,
+                            noise_rms=noise, seed=seed)
+
+
+rng9c = random.Random(99)
+cases9 = {
+    "развёртка 512, 7000 имп/с": frame9(592, 7000, 1.5, 1),
+    "развёртка 16384, 7000 имп/с": frame9(16592, 7000, 1.5, 2),
+    "развёртка 32768, 20000 имп/с": frame9(32976, 20000, 2.0, 3),
+    "крайние 0/4095 вперемешку": [rng9c.choice((0, 4095)) for _ in range(3000)],
+    "разности ровно ±7 и ±8": [2048 + (7 if i % 4 == 1 else -8 if i % 4 == 3
+                                       else 0) for i in range(1001)],
+    "один отсчёт": [1234],
+    "пусто": [],
+}
+enc9 = {}
+ok_rt = True
+for name, s in cases9.items():
+    parts = scopecodec.encode(s)
+    blob = b''.join(parts)
+    enc9[name] = blob
+    back = scopecodec.decode(blob, len(s))
+    ratio = (2 * len(s) / len(blob)) if blob else 0
+    print(f"  {name}: {len(s)} отсчётов, {2 * len(s)} -> {len(blob)} байт "
+          f"(x{ratio:.1f}), кусков {len(parts)}")
+    ok_rt &= back == [v & 0xFFF for v in s]
+check("модель: сжатие и расшифровка совпадают бит в бит", ok_rt)
+
+# куски разной длины - состояние переживает границы, результат тот же
+s9 = cases9["развёртка 16384, 7000 имп/с"]
+same9 = all(b''.join(scopecodec.encode(s9, fc, c)) == enc9["развёртка 16384, 7000 имп/с"]
+            for fc, c in ((2, 2), (5, 7), (100, 3000)))
+check("сжатие не зависит от нарезки на куски", same9)
+big = cases9["развёртка 32768, 20000 имп/с"]
+check("длинная развёртка сжимается больше чем в 3 раза",
+      2 * len(big) / len(enc9["развёртка 32768, 20000 имп/с"]) > 3.0)
+
+# wdec из самой страницы
+src9 = ci.strip_c_comments(open(ci.SRC, encoding='utf-8').read())
+page9 = None
+for m9 in re.finditer(r'static const char (\w+)\[\]\s*=(.*?);\n', src9, re.S):
+    if m9.group(1) == 'PAGE':
+        page9 = ''.join(ci.expand(ci.c_tokens(m9.group(2)), ci.macros(src9)))
+i9 = page9.find('function wdec(') if page9 else -1
+if i9 < 0:
+    check("wdec найдена на странице", False)
+else:
+    depth, j9 = 0, i9
+    while True:
+        ch = page9[j9]
+        depth += ch == '{'
+        depth -= ch == '}'
+        j9 += 1
+        if ch == '}' and depth == 0:
+            break
+    js = page9[i9:j9] + """
+var fs=require('fs'),inp=JSON.parse(fs.readFileSync(process.argv[2],'utf8')),res={};
+for(var k in inp){var b=Buffer.from(inp[k][0],'hex');
+res[k]=wdec(new Uint8Array(b.buffer,b.byteOffset,b.length),inp[k][1])}
+console.log(JSON.stringify(res));"""
+    with tempfile.TemporaryDirectory() as td:
+        jf = os.path.join(td, 'wdec.js')
+        df = os.path.join(td, 'in.json')
+        open(jf, 'w', encoding='utf-8').write(js)
+        # ключи - номерами: русские портятся в выводе node под Windows
+        keys9 = list(cases9)
+        json.dump({f"c{i}": [enc9[k].hex(), len(cases9[k])]
+                   for i, k in enumerate(keys9)}, open(df, 'w'))
+        try:
+            r9 = subprocess.run(['node', jf, df], capture_output=True, text=True)
+            out9 = json.loads(r9.stdout) if r9.returncode == 0 else None
+        except FileNotFoundError:
+            out9 = None
+    if out9 is None:
+        check("node запустил wdec", False, "нужен node")
+    else:
+        bad = [k for i, k in enumerate(keys9)
+               if out9.get(f"c{i}") != [x & 0xFFF for x in cases9[k]]]
+        check("wdec страницы расшифровывает кадры прошивки бит в бит",
+              not bad, f"расхождения: {bad}")
+
 print("\n" + "=" * 62)
 if fails:
     print(f"ПРОВАЛЕНО: {len(fails)}")
