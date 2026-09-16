@@ -442,13 +442,22 @@ pre-allocated memory.
 
 ### Oscilloscope
 
-- **Window of up to 32768 samples in PSRAM, only the needed length is
-  collected.** The window was once reduced to 8192 and moved to internal
-  RAM, blaming PSRAM for the refresh freezes; the main cause turned out to
-  be CLK harmonics in WiFi. Two 64 KB buffers do not fit into internal RAM,
-  so they are in PSRAM, but the device collects exactly as much as the page
-  requests for the time base — nothing extra is written for short time
-  bases.
+- **Window sized to the time base: up to 8192 in internal RAM, longer in
+  PSRAM.** The device collects exactly what the page requests: the time
+  base plus the trapezoid margin, with one fifth of the screen before the
+  trigger (the prehistory used to be always 6144 samples). At 20 MHz with
+  the windows in PSRAM chunks were lost — only in the oscilloscope and
+  only during `/scope` requests: writing one capture buffer into the
+  window took up to 0.9 ms against a 0.1 ms budget. The PSRAM data cache
+  is 32 KB, the window up to 64 KB, and the web was reading the snapshot
+  from there at the same time. Now two windows of up to 8400 samples
+  (2 × 17 KB) live in internal RAM and two full ones in PSRAM for the
+  16384 and 32768 time bases; with those, losses are possible at 20 MHz.
+  (The window was once moved to internal RAM because of page freezes —
+  that time the cause turned out to be CLK harmonics in WiFi.)
+- **The snapshot is sent to the network straight from its buffer**,
+  without a copy: while the response is being sent no new frames are
+  published, and the next window is collected in another buffer.
 - **Pre-trigger history without copying.** Up to 6 KB used to be copied
   per chunk, with a budget of 128 µs per chunk at 16 MHz. Now pointers to
   the four previous capture buffers are kept (history up to 6144 samples),
@@ -477,7 +486,8 @@ pre-allocated memory.
   under the plot.
 - The `/scope` response is binary (7 × int32 + uint16 samples), only the
   part for the time base; the page polls again right after drawing, at
-  most every 100 ms.
+  most every 50 ms (up to 20 frames per second), and the device prepares
+  snapshots at most every 25 ms.
 
 ### Other
 

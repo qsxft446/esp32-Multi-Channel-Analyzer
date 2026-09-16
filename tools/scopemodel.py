@@ -23,6 +23,7 @@ _H = _defines('mca_diag.h')
 _C = _defines('mca_diag.c')
 LEN = _H['DIAG_SCOPE_LEN']
 PRE = _H['DIAG_SCOPE_PRE']
+FAST = _C['DIAG_SCOPE_FAST']
 SPAN = _H['DIAG_TRIG_SPAN']
 AUTO_WAIT_US = _C['AUTO_WAIT_US']
 SNAP_PERIOD_US = _C['SNAP_PERIOD_US']
@@ -41,16 +42,18 @@ class Scope:
     перепад, начало окна в исходном сигнале - для проверки непрерывности).
     amps / rejs - высота импульса и число отброшенных фильтром для каждого
     снимка. snap_us/auto_us можно уменьшить, чтобы тест шёл быстрее: логика
-    та же. want - сколько отсчётов просит страница; amin/amax - фильтр
-    амплитуды (amax <= 0 - выключен)."""
+    та же. want - сколько отсчётов просит страница, pre - сколько из них до
+    фронта (как mca_diag_set_scope_want); amin/amax - фильтр амплитуды
+    (amax <= 0 - выключен)."""
 
     def __init__(self, level=30, snap_us=SNAP_PERIOD_US, auto_us=AUTO_WAIT_US,
-                 neg=False, want=LEN, amin=0, amax=0):
+                 neg=False, want=LEN, pre=PRE, amin=0, amax=0):
         self.level = level
         self.sg = -1 if neg else 1
         self.snap_us = snap_us
         self.auto_us = auto_us
         self.want = min(want, LEN)
+        self.pre = min(pre, self.want, PRE)
         if amin < 0:
             amin = 0
         if amax > 0 and amin > amax:
@@ -99,9 +102,10 @@ class Scope:
         return len(self.build) >= self.cap_len
 
     def _cap_start(self, d, j, off):
-        ln = max(self.want + PRE, PRE + AMP_WIN)
-        self.cap_len = min(ln, LEN)
-        need = PRE
+        pre = self.pre
+        after = max(self.want - pre, AMP_WIN)
+        self.cap_len = min(pre + after, LEN)
+        need = pre
         cur = min(j, need)
         need -= cur
         takes = []
@@ -194,7 +198,7 @@ class Scope:
                 self._publish(now)
             return
 
-        if self._avail() < PRE:
+        if self._avail() < self.pre:
             return
 
         K, lvl, sg = SPAN, self.level, self.sg

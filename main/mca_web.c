@@ -831,7 +831,9 @@ static const char PAGE[] =
    WiFi, и запросы не копятся в очередь. Просим только кусок под
    развёртку плюс запас L+G+16 слева, чтобы трапеция у края экрана
    успела установиться. Ответ двоичный: семь int32 и отсчёты по 2 байта. */
-"var SPER=100;"
+/* 50 мс - до 20 кадров в секунду: окна коротких развёрток прибор держит
+   во внутренней памяти и отдаёт без копии, ответ занимает единицы мс */
+"var SPER=50;"
 "function sparse(b){var v=new DataView(b),n=(b.byteLength-28)>>1,d=new Array(n);"
 "for(var i=0;i<n;i++)d[i]=v.getUint16(28+2*i,true);"
 "return {tg:v.getInt32(0,true),rise:v.getInt32(4,true),age:v.getInt32(8,true),"
@@ -922,7 +924,7 @@ static esp_err_t h_scope(httpd_req_t *r)
             mca_diag_set_trig_level(atoi(v));
         if (httpd_query_key_value(q, "n", v, sizeof(v)) == ESP_OK) {
             int x = atoi(v);
-            if (x > 0 && x < DIAG_SCOPE_LEN) want = (size_t)x;
+            if (x > 0 && x <= DIAG_SCOPE_LEN) want = (size_t)x;
         }
         if (httpd_query_key_value(q, "pre", v, sizeof(v)) == ESP_OK) {
             int x = atoi(v);
@@ -937,41 +939,36 @@ static esp_err_t h_scope(httpd_req_t *r)
         mca_diag_set_amp_window(lo, hi);
     }
     /* прибор соберёт окно ровно под эту развёртку */
-    mca_diag_set_scope_want(want);
+    mca_diag_set_scope_want(want, pre);
 
     /* Ответ двоичный, little-endian: семь int32 (tg, rise, age, lvl,
      * длина всего окна, высота импульса, отброшено фильтром амплитуды),
      * затем отсчёты по uint16. Втрое короче JSON, и прибору не нужно
      * форматировать десятки тысяч чисел через snprintf - от этого и
-     * зависит, сколько раз в секунду обновляется картинка. Буфер до 64 КБ
-     * берём из PSRAM один раз (веб-сервер обрабатывает запросы по одному,
-     * общий буфер безопасен). */
-    enum { HDR = 7 * sizeof(int32_t) };
-    static uint8_t *raw;
-    /* В PSRAM. Во внутренней памяти пробовали - стало хуже: 32 КБ
-     * отнимались у WiFi, а копия конкурировала с DMA захвата, и вернулись
-     * потерянные чанки. */
-    if (!raw) raw = heap_caps_malloc(HDR + DIAG_SCOPE_LEN * 2, MALLOC_CAP_SPIRAM);
-    if (!raw) raw = malloc(HDR + DIAG_SCOPE_LEN * 2);
-    if (!raw) {
-        mca_prof_web_end(PROF_EP_SCOPE);
-        return httpd_resp_send_500(r);
-    }
-    uint16_t *d = (uint16_t *)(raw + HDR);
-
+     * зависит, сколько раз в секунду обновляется картинка.
+     *
+     * Отсчёты уходят в сеть ПРЯМО ИЗ БУФЕРА СНИМКА, без копии. Раньше они
+     * копировались в отдельный буфер 64 КБ в PSRAM, а снимок тоже лежал в
+     * PSRAM: веб гонял кэш PSRAM, пока задача обработки писала туда
+     * следующее окно, и на 20 МГц терялись чанки. Маска не нужна: в
+     * камерный интерфейс заведены только 12 бит данных (см. adc_cap.c).
+     * Пока ответ уходит, снимок занят - новые кадры не публикуются. */
     int32_t tg = -1, rise = 0, age = -1, amp = -1;
     uint32_t rej = 0;
     size_t full = 0;
-    size_t n = mca_diag_get_scope(d, want, pre, &tg, &rise, &age, &full,
-                                  &amp, &rej);
-    for (size_t i = 0; i < n; i++) d[i] &= MCA_DATA_MASK;
+    const uint16_t *d = NULL;
+    size_t n = mca_diag_scope_acquire(want, pre, &d, &tg, &rise, &age, &full,
+                                      &amp, &rej);
 
-    int32_t h[7] = { tg, rise, age, mca_diag_get_trig_level(), (int32_t)full,
-                     amp, (int32_t)rej };
-    memcpy(raw, h, HDR);
+    const int32_t h[7] = { tg, rise, age, mca_diag_get_trig_level(),
+                           (int32_t)full, amp, (int32_t)rej };
     httpd_resp_set_type(r, "application/octet-stream");
     httpd_resp_set_hdr(r, "Cache-Control", "no-store");
-    esp_err_t e = httpd_resp_send(r, (const char *)raw, HDR + n * 2);
+    esp_err_t e = httpd_resp_send_chunk(r, (const char *)h, sizeof(h));
+    if (e == ESP_OK && n)
+        e = httpd_resp_send_chunk(r, (const char *)d, n * sizeof(uint16_t));
+    mca_diag_scope_release();
+    if (e == ESP_OK) e = httpd_resp_send_chunk(r, NULL, 0);
     mca_prof_web_end(PROF_EP_SCOPE);
     return e;
 }

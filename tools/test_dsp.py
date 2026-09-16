@@ -158,7 +158,8 @@ check("0.5 кода на канал разворачивает тот же за�
 
 # ------------------------------------------------------------------ L6
 print("\n=== УРОВЕНЬ 6: осциллограф - синхронизация по фронту ===")
-from scopemodel import Scope, LEN as SLEN, PRE as SPRE, SPAN as SSPAN
+from scopemodel import (Scope, LEN as SLEN, PRE as SPRE, SPAN as SSPAN,
+                        FAST as SFAST, AMP_WIN as SAMP_WIN)
 
 FS = 10e6
 CHUNK_US = CAP_CHUNK_SAMPLES / FS * 1e6
@@ -222,16 +223,31 @@ check("свободные окна тоже непрерывны",
       all(cap == quiet[a:a + SLEN] for cap, _, _, a in qa))
 check("ждущий без фронта ничего не публикует", len(qn) == 0)
 
-# Окно под развёртку: страница просит 512 отсчётов - прибор собирает
-# 512 + предыстория, а не всё окно.
-ws = scope_run(sig6, 2, want=512)
+# Окно под развёртку: на развёртке 512 страница просит n = 512 + запас
+# трапеции (L+G+16) и pre = пятая часть экрана + тот же запас. Прибор
+# собирает ровно столько, с фронтом на месте pre, а не всё окно, - и
+# такое окно помещается во внутреннюю память (DIAG_SCOPE_FAST).
+M6 = 20 + 44 + 16
+W6, P6 = 512 + M6, round(512 * 0.2) + M6
+ws = scope_run(sig6, 2, want=W6, pre=P6)
 wlen = sorted(set(len(cap) for cap, _, _, _ in ws.pub))
+wtg = sorted(set(t for _, t, _, _ in ws.pub))
 print(f"  развёртка 512: снимков {len(ws.pub)}, длина окна {wlen} "
-      f"(ждали {512 + SPRE})")
+      f"(ждали {W6}), фронт на {wtg} (ждали {P6})")
 check("окно собирается под развёртку",
-      len(ws.pub) >= 10 and wlen == [512 + SPRE]
-      and sorted(set(t for _, t, _, _ in ws.pub)) == [SPRE]
+      len(ws.pub) >= 10 and wlen == [W6] and W6 <= SFAST and wtg == [P6]
       and all(cap == sig6[a:a + len(cap)] for cap, _, _, a in ws.pub))
+# Развёртка 8192 - самая длинная, что должна влезать во внутреннюю память.
+M8 = 64 + 128 + 16
+check("окно развёртки 8192 с наибольшим запасом трапеции влезает во "
+      "внутреннюю память", 8192 + M8 <= SFAST,
+      f"окно {8192 + M8}, внутренний буфер {SFAST}")
+# Самая короткая развёртка: после фронта всё равно не меньше AMP_WIN -
+# иначе высоту импульса не измерить.
+wz = scope_run(sig6, 2, want=64 + M6, pre=13 + M6)
+zlen = sorted(set(len(cap) for cap, _, _, _ in wz.pub))
+check("короткое окно - предыстория + не меньше поиска высоты",
+      len(wz.pub) >= 10 and zlen == [13 + M6 + SAMP_WIN], f"{zlen}")
 
 # Синхронизация по амплитуде: импульсы двух высот вперемешку, фильтр
 # пропускает только высокие.

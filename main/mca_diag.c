@@ -53,10 +53,27 @@ static int64_t  s_next_analyze_us;   /* когда разрешён следую
  * "выше уровня": взведясь посреди фронта, иначе сработали бы на
  * первом же отсчёте, и импульс встал бы со сдвигом. */
 #define AUTO_WAIT_US   150000   /* авто: столько ждём фронт, потом пуск */
-/* Не чаще 20 снимков в секунду. Страница опрашивает раз в 100 мс, и при
- * том же периоде здесь из-за сдвига фаз ей то и дело доставался бы
+/* Не чаще 40 снимков в секунду. Страница опрашивает не чаще раза в 50 мс,
+ * и при том же периоде здесь из-за сдвига фаз ей то и дело доставался бы
  * прежний снимок - картинка дёргалась бы. */
-#define SNAP_PERIOD_US 50000
+#define SNAP_PERIOD_US 25000
+
+/* БУФЕРЫ ОКНА - ВО ВНУТРЕННЕЙ ПАМЯТИ, ГДЕ ПОМЕЩАЮТСЯ.
+ *
+ * На 20 МГц с окнами в PSRAM терялись чанки - только в режиме
+ * осциллографа и только во время запросов /scope: запись одного буфера
+ * захвата (4 КБ) в окно занимала до 0.9 мс при бюджете 0.1 мс. Кэш
+ * данных PSRAM - 32 КБ, окно - до 64 КБ, и веб в это же время читал
+ * снимок оттуда же.
+ *
+ * Поэтому два окна до DIAG_SCOPE_FAST отсчётов - во внутренней памяти
+ * (развёртки до 8192: страница просит 8192 + запас трапеции до 208),
+ * два полных - в PSRAM, для длинных развёрток. Сборка берёт самый
+ * маленький подходящий буфер, кроме опубликованного. */
+#define DIAG_SCOPE_FAST 8400
+typedef struct { uint16_t *p; size_t cap; } sbuf_t;
+static sbuf_t   s_pool[4];
+static int      s_npool;
 
 static uint16_t *s_scope;          /* опубликованный снимок                */
 static uint16_t *s_build;          /* собирается                           */
@@ -79,9 +96,13 @@ static const uint16_t *s_prv[DIAG_PRV_N];
 static size_t   s_prv_n[DIAG_PRV_N];
 static int      s_prv_i;          /* куда писать следующий */
 
-/* Длина окна: сколько просит страница (s_want) плюс предыстория. Задаётся
- * при начале сборки, чтобы смена развёртки не рвала собираемое окно. */
+/* Окно - под запрос страницы: s_want отсчётов, из них s_pre_want до
+ * момента синхронизации (пятая часть экрана и запас трапеции). Раньше
+ * предыстория была всегда DIAG_SCOPE_PRE, и даже развёртка 512 собирала
+ * 6656 отсчётов. Длина задаётся при начале сборки, чтобы смена развёртки
+ * не рвала собираемое окно. */
 static volatile size_t s_want = DIAG_SCOPE_LEN;
+static volatile size_t s_pre_want = DIAG_SCOPE_PRE;
 static size_t   s_cap_len = DIAG_SCOPE_LEN;
 
 /* СИНХРОНИЗАЦИЯ ПО АМПЛИТУДЕ. После фронта прибор меряет высоту
@@ -105,15 +126,42 @@ static int64_t  s_arm_us;
 static int64_t  s_snap_next_us;
 static int32_t  s_trig_level = 30;
 
+static void pool_add(size_t cap, uint32_t caps)
+{
+    uint16_t *p = heap_caps_calloc(cap, sizeof(uint16_t), caps);
+    if (!p) {
+        ESP_LOGW(TAG, "нет памяти под окно осциллографа на %u отсчётов",
+                 (unsigned)cap);
+        return;
+    }
+    s_pool[s_npool].p   = p;
+    s_pool[s_npool].cap = cap;
+    s_npool++;
+}
+
+/* Буфер для нового окна: самый маленький из подходящих, кроме
+ * опубликованного (его, может быть, как раз читает веб). s_scope меняет
+ * только задача обработки, поэтому читать его здесь можно без блокировки. */
+static uint16_t *pick_build(size_t len)
+{
+    const sbuf_t *b = NULL;
+    for (int i = 0; i < s_npool; i++) {
+        const sbuf_t *e = &s_pool[i];
+        if (e->p == s_scope || e->cap < len) continue;
+        if (!b || e->cap < b->cap) b = e;
+    }
+    return b ? b->p : NULL;
+}
+
 void mca_diag_init(void)
 {
     memset(&s_d, 0, sizeof(s_d));
 
-    /* Оба буфера окна по 64 КБ - в PSRAM: во внутреннюю память не
-     * влезают. Пишется в них только нужная развёртке длина. */
-    s_scope = heap_caps_calloc(DIAG_SCOPE_LEN, 2, MALLOC_CAP_SPIRAM);
-    s_build = heap_caps_calloc(DIAG_SCOPE_LEN, 2, MALLOC_CAP_SPIRAM);
-    if (!s_scope || !s_build)
+    pool_add(DIAG_SCOPE_FAST, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    pool_add(DIAG_SCOPE_FAST, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    pool_add(DIAG_SCOPE_LEN,  MALLOC_CAP_SPIRAM);
+    pool_add(DIAG_SCOPE_LEN,  MALLOC_CAP_SPIRAM);
+    if (s_npool < 2)
         ESP_LOGE(TAG, "нет памяти под окно осциллографа");
     s_enabled = false;
 }
@@ -145,6 +193,13 @@ static void prv_push(const uint16_t *d, size_t n)
 static void prv_reset(void)
 {
     for (int k = 0; k < DIAG_PRV_N; k++) s_prv_n[k] = 0;
+}
+
+/* Сколько предыстории нужно окну, которое сейчас просит страница. */
+static size_t cur_pre(void)
+{
+    const size_t p = s_pre_want;
+    return p < DIAG_SCOPE_PRE ? p : DIAG_SCOPE_PRE;
 }
 
 /* Сколько отсчётов подряд, без разрыва, лежит в запомненных чанках. */
@@ -185,16 +240,25 @@ static bool cap_take(const uint16_t *d, size_t n)
 /* Начать окно так, чтобы отсчёт d[j] встал после предыстории.
  * Предыстория собирается здесь, ОДИН раз на срабатывание: из
  * запомненных предыдущих чанков (от старых к свежим), затем из начала
- * текущего. */
-static bool cap_start(const uint16_t *d, size_t n, size_t j)
+ * текущего. 1 - окно уже полное, 0 - собирается дальше, -1 - нет
+ * свободного буфера (окно не начато). */
+static int cap_start(const uint16_t *d, size_t n, size_t j)
 {
-    /* длина окна: запрос страницы + предыстория, в пределах буфера */
-    size_t len = s_want + DIAG_SCOPE_PRE;
-    if (len < DIAG_SCOPE_PRE + AMP_WIN) len = DIAG_SCOPE_PRE + AMP_WIN;
-    if (len > DIAG_SCOPE_LEN)           len = DIAG_SCOPE_LEN;
+    /* длина окна: предыстория + сколько страница просит после фронта, но
+     * не меньше AMP_WIN - иначе не измерить высоту импульса */
+    const size_t w = s_want;
+    const size_t pre = cur_pre();
+    size_t after = w > pre ? w - pre : 0;
+    if (after < AMP_WIN) after = AMP_WIN;
+    size_t len = pre + after;
+    if (len > DIAG_SCOPE_LEN) len = DIAG_SCOPE_LEN;
+
+    uint16_t *b = pick_build(len);
+    if (!b) return -1;
+    s_build   = b;
     s_cap_len = len;
 
-    size_t need = DIAG_SCOPE_PRE;
+    size_t need = pre;
     const size_t cur = j < need ? j : need;
     need -= cur;
 
@@ -222,16 +286,15 @@ static bool cap_start(const uint16_t *d, size_t n, size_t j)
     s_cap_trig = (int32_t)pos;
     s_amp_done = false;
     s_cap_amp  = -1;
-    return cap_take(d + j, n - j);
+    return cap_take(d + j, n - j) ? 1 : 0;
 }
 
 static void cap_publish(int64_t now)
 {
-    /* Буферы меняем местами, а не копируем. Но пока веб копирует
-     * опубликованный снимок, обмен НЕ делаем: иначе его буфер уйдёт под
-     * сборку и начнёт перезаписываться. Такой кадр просто пропускаем -
-     * снимки выходят 20 раз в секунду, страница забирает 10, потеря
-     * незаметна.
+    /* Собранный буфер становится опубликованным, без копии. Но пока веб
+     * отдаёт опубликованный снимок, подмену НЕ делаем: иначе его буфер
+     * уйдёт под сборку и начнёт перезаписываться. Такой кадр просто
+     * пропускаем - снимков вдвое больше, чем страница забирает.
      *
      * Прошлый вариант (копировать без блокировки и повторять, если
      * снимок подменили) давал биение: период публикации 50 мс и время
@@ -240,9 +303,7 @@ static void cap_publish(int64_t now)
      * по две секунды. */
     LOCK();
     if (!s_scope_rd) {
-        uint16_t *t = s_scope;
-        s_scope = s_build;
-        s_build = t;
+        s_scope = s_build;          /* следующее окно возьмёт другой буфер */
         s_scope_len  = s_fill;
         s_scope_trig = s_cap_trig;
         s_scope_rise = s_cap_rise;
@@ -343,7 +404,7 @@ static void scope_step(const uint16_t *d, size_t n, diag_scope_mode_t sm,
      * захвата (а он перезапускается при каждой смене вкладки и после
      * паузы) прыгали бы по экрану. Набирается за DIAG_SCOPE_PRE отсчётов -
      * при 16 МГц это 0.4 мс. */
-    if (prv_avail() < DIAG_SCOPE_PRE) return;
+    if (prv_avail() < cur_pre()) return;
 
     /* SC_ARMED: ищем пересечение уровня */
     const int32_t lvl = s_trig_level;
@@ -394,10 +455,11 @@ static void scope_step(const uint16_t *d, size_t n, diag_scope_mode_t sm,
 
     if (hit && prv_safe()) {
         s_cap_rise = r;
-        const bool full = cap_start(d, n, j);
+        const int st = cap_start(d, n, j);
+        if (st < 0) return;             /* буфера нет - ждём следующий */
         if (!amp_gate()) return;        /* вне диапазона - ждём следующий */
-        if (full) cap_publish(now);
-        else      s_sc = SC_POST;
+        if (st) cap_publish(now);
+        else    s_sc = SC_POST;
         return;
     }
 
@@ -405,17 +467,18 @@ static void scope_step(const uint16_t *d, size_t n, diag_scope_mode_t sm,
         /* фронта нет - свободный пуск, чтобы экран не замер */
         s_cap_rise = 0;
         if (!prv_safe()) prv_reset();
-        bool full = cap_start(d, n, 0);
+        const int st = cap_start(d, n, 0);
+        if (st < 0) return;
         s_cap_trig = -1;
-        if (full) cap_publish(now);
-        else      s_sc = SC_POST;
+        if (st) cap_publish(now);
+        else    s_sc = SC_POST;
     }
 }
 
 static void scope_feed(const uint16_t *d, size_t n, diag_scope_mode_t sm,
                        int64_t now)
 {
-    if (!s_scope || !s_build) return;
+    if (!s_npool) return;
     scope_step(d, n, sm, now);
     /* Этот чанк - предыстория для следующих. Запоминается всегда, в
      * любом состоянии: это два присваивания. */
@@ -532,10 +595,12 @@ void mca_diag_get(mca_diag_t *out)
     UNLOCK();
 }
 
-void mca_diag_set_scope_want(size_t n)
+void mca_diag_set_scope_want(size_t n, size_t pre)
 {
     if (n > DIAG_SCOPE_LEN) n = DIAG_SCOPE_LEN;
-    s_want = n;
+    if (pre > n) pre = n;
+    s_want     = n;
+    s_pre_want = pre;
 }
 
 void mca_diag_set_amp_window(int32_t lo, int32_t hi)
@@ -546,16 +611,16 @@ void mca_diag_set_amp_window(int32_t lo, int32_t hi)
     s_amax = hi;
 }
 
-size_t mca_diag_get_scope(uint16_t *dst, size_t max, size_t pre,
-                          int32_t *trig_pos, int32_t *rise,
-                          int32_t *age_ms, size_t *full_len,
-                          int32_t *amp, uint32_t *rej)
+size_t mca_diag_scope_acquire(size_t max, size_t pre, const uint16_t **data,
+                              int32_t *trig_pos, int32_t *rise,
+                              int32_t *age_ms, size_t *full_len,
+                              int32_t *amp, uint32_t *rej)
 {
-    /* Снимок копируется БЕЗ блокировки: её задача обработки берёт на
-     * каждом чанке, а копия - до 64 КБ. На время копии поднимаем
-     * признак: публикация в этот момент буферы не меняет (см.
-     * cap_publish), поэтому данные под нами не перезапишутся и ни
-     * повторов, ни пустых ответов не нужно. */
+    /* Снимок отдаётся БЕЗ блокировки и без копии: веб шлёт его в сеть
+     * прямо из буфера. До mca_diag_scope_release поднят признак чтения:
+     * публикация в это время буфер не подменяет (см. cap_publish), и
+     * новое окно собирается в другом буфере (pick_build), так что данные
+     * под веб-сервером не перезапишутся. */
     LOCK();
     const uint16_t *src = s_scope;
     const size_t    len = src ? s_scope_len : 0;
@@ -571,17 +636,20 @@ size_t mca_diag_get_scope(uint16_t *dst, size_t max, size_t pre,
     size_t st = 0;
     if (tg >= 0 && (size_t)tg > pre) st = (size_t)tg - pre;
     if (st + n > len) st = len - n;
-    if (n) memcpy(dst, src + st, n * sizeof(uint16_t));
-
-    LOCK();
-    s_scope_rd = false;
-    UNLOCK();
+    *data = n ? src + st : NULL;
 
     *trig_pos = tg >= 0 ? tg - (int32_t)st : -1;
     *full_len = len;
     *rise     = rs;
     *age_ms   = tm ? (int32_t)((esp_timer_get_time() - tm) / 1000) : -1;
     return n;
+}
+
+void mca_diag_scope_release(void)
+{
+    LOCK();
+    s_scope_rd = false;
+    UNLOCK();
 }
 
 void mca_diag_set_trig_level(int32_t lvl)
