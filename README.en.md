@@ -201,7 +201,9 @@ BecqMoni (answers to commands).
 - **Spectrum** — acquisition, lin/log scale, analysis of the
   selected peak (centroid, FWHM, resolution), file export: XML
   (ResultDataFile, opens in BecqMoni), CSV (channel, count), N42
-  (ANSI N42.42), SPE (SpectraLine).
+  (ANSI N42.42), SPE (SpectraLine). Under the “settings” checkbox is the
+  same processing parameter table as on “MCA config”: the parameters can be
+  changed right during acquisition to see how the spectrum changes.
 - **MCA config** — oscilloscope with edge triggering (auto
   and normal modes, time base 64–32768 samples, amplitude triggering —
   “amplitude from–to”: show only pulses whose height above

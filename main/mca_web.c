@@ -759,8 +759,11 @@ static const char PAGE[] =
 "function showCtl(){var m=document.getElementById('md').value,sp=(m=='0'||m=='2'),sc=!sp;"
 "cv.style.cursor=sc?'crosshair':'';cv.style.touchAction=sc?'none':'';"
 "var v={g_sp:sp,g_sc:sc,g_zm:sc,g_leg:sc,g_rul:sc,g_big:sp,bclr:sp,st:sp,"
-/* настройки - только на вкладке осциллографа: подбираются по импульсам */
-"g_shs:sc,g_set:sc&&document.getElementById('shset').checked};"
+/* Настройки - на обеих вкладках: на осциллографе их подбирают по
+   импульсам, на «Спектре» - меняют прямо во время набора и смотрят, как
+   меняется спектр (вкладки переключают режим всего прибора, поэтому
+   открыть обе сразу нельзя). Галочка общая. */
+"g_shs:1,g_set:document.getElementById('shset').checked};"
 "for(var k in v){var e=document.getElementById(k);if(e)e.style.display=v[k]?'':'none'}}"
 "function hl(){var m=document.getElementById('md').value,g=(m=='3')?'1':(m=='2'?'0':m);"
 "if(m=='1'||m=='3')SCM=+m;"
@@ -2162,7 +2165,11 @@ SUB_HEAD("Справка", "Help") SUB_NAV(N_DIAG, N_WIFI, N_HELP_ON)
 "XML (ResultDataFile, открывается в BecqMoni), CSV (канал и счёт), "
 "N42 (ANSI N42.42) и SPE (SpectraLine). "
 "Выгружаются каналы, видимые на экране; время замера берётся из часов "
-"компьютера &mdash; своих часов у прибора нет.</td></tr>"
+"компьютера &mdash; своих часов у прибора нет. Под галочкой «настройки» "
+"&mdash; та же таблица параметров обработки, что на «Конфиг MCA»: их можно "
+"менять прямо во время набора и смотреть, как меняется спектр. Смена "
+"«Кодов на канал» и способа измерения очищает спектр, смена L, G и "
+"полярности перезапускает фильтр.</td></tr>"
 "<tr><td>Конфиг MCA</td><td>Осциллограф и настройки обработки. Сырые отсчёты с синхронизацией "
 "по фронту: как только сигнал вырос за 8 отсчётов не меньше чем на "
 "«синхр. по фронту», момент срабатывания ставится на пятую часть "
@@ -2309,7 +2316,11 @@ SUB_HEAD("Справка", "Help") SUB_NAV(N_DIAG, N_WIFI, N_HELP_ON)
 "“export” buttons save the spectrum to a file: XML (ResultDataFile, opens in "
 "BecqMoni), CSV (channel and count), N42 (ANSI N42.42) and SPE (SpectraLine). The "
 "channels visible on screen are exported; the measurement time is taken from the "
-"computer clock &mdash; the device has no clock of its own.</td></tr>"
+"computer clock &mdash; the device has no clock of its own. Under the "
+"“settings” checkbox is the same processing parameter table as on “MCA "
+"config”: the parameters can be changed right during acquisition to see how "
+"the spectrum changes. Changing “Codes per channel” or the method clears the "
+"spectrum, changing L, G or polarity restarts the filter.</td></tr>"
 "<tr><td>MCA config</td><td>Oscilloscope and processing settings. Raw samples with "
 "edge triggering: as soon as the signal rises by at least “trigger on edge” within "
 "8 samples, the trigger point is placed at one fifth of the screen (blue mark), and "
