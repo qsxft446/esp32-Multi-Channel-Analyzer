@@ -654,7 +654,7 @@ static const char PAGE[] =
 "sc.innerHTML=sy+"
 "L('<br>на экране ','<br>on screen ')+Wn+L(' отсч = ',' smp = ')+(Wn/fh*1e6).toFixed(1)+L(' мкс из ',' µs of ')+(j.len||a.length)+L(' отсч = ',' smp = ')+"
 "((j.len||a.length)/fh*1e6).toFixed(0)+L(' мкс записи',' µs recorded')+"
-"(window.SFPS?L(' &nbsp; обновление ',' &nbsp; refresh ')+window.SFPS.toFixed(1)+L(' раз/с','/s'):'')+"
+"(window.SFPS?L(' &nbsp; обновление ',' &nbsp; refresh ')+window.SFPS+L(' раз/с','/s'):'')+"
 /* поток осциллографа и чем он идёт */
 "(window.SKBPS?' &nbsp; '+L('поток ','stream ')+window.SKBPS+L(' кбит/с',' kbit/s')+' ('+(WSOK?'WebSocket':'HTTP')+')':'')+"
 "L('<br>сигнал: мин ','<br>signal: min ')+mn+L('  макс ','  max ')+mx+L('  база ','  baseline ')+bl.toFixed(0)+L('  шум(СКО) ','  noise(RMS) ')+sd.toFixed(1)+"
@@ -866,15 +866,22 @@ static const char PAGE[] =
 "else{n=Math.min(n,(b.byteLength-40)>>1);d=new Array(n);for(var i=0;i<n;i++)d[i]=v.getUint16(40+2*i,true)}"
 "return {tg:v.getInt32(0,true),rise:v.getInt32(4,true),age:v.getInt32(8,true),lvl:v.getInt32(12,true),"
 "len:v.getInt32(16,true),amp:v.getInt32(20,true),rej:v.getInt32(24,true),seq:v.getInt32(28,true),d:d}}"
-/* Пришёл кадр (любым путём): нарисовать, если открыт осциллограф (ответ
-   мог прийти уже на «Спектре»), посчитать частоту кадров и поток. */
-"var SBYTES=0;"
-"function sframe(j,md,nb){SBYTES+=nb;if(!isScope())return;j.rcv=Date.now();drawScope(j,md=='3');"
-"var now=Date.now();if(window.SLAST)window.SFPS=(window.SFPS||1000/(now-window.SLAST))*0.8+200/(now-window.SLAST);"
-"window.SLAST=now}"
-/* раз в секунду - поток в кбит/с; в ждущем режиме по WebSocket старые
-   кадры не повторяются, поэтому возраст снимка обновляем перерисовкой */
-"setInterval(function(){window.SKBPS=Math.round(SBYTES*8/1000);SBYTES=0;"
+/* Пришёл кадр (любым путём). Рисуем НЕ ЧАЩЕ РАЗА В SPER мс, на любой
+   развёртке: большие кадры приходят по TCP пачками, и если рисовать каждый
+   сразу, браузер не успевал (32768 точек на кадр), кадры копились, и
+   обновление то разгонялось, то падало. Пришедший раньше срока кадр ждёт,
+   а следующий его заменяет - рисуется всегда самый свежий. Ответ мог прийти
+   уже на «Спектре» - тогда не рисуем. */
+"var SBYTES=0,SFR=0,SPEND=null,SLASTD=0,STMR=0;"
+"function sframe(j,md,nb){SBYTES+=nb;if(!isScope())return;j.rcv=Date.now();SPEND=[j,md];"
+"var w=SLASTD+SPER-Date.now();if(w<=0)sdraw();else if(!STMR)STMR=setTimeout(sdraw,w)}"
+"function sdraw(){STMR=0;var p=SPEND;SPEND=null;if(!p||!isScope())return;"
+"SLASTD=Date.now();SFR++;drawScope(p[0],p[1]=='3')}"
+/* Раз в секунду: частота обновления - сколько кадров НАРИСОВАНО за секунду
+   (прежнее сглаживание мгновенных скоростей в пачках завышало цифру), и
+   поток в кбит/с. В ждущем режиме по WebSocket старые кадры не
+   повторяются, поэтому возраст снимка обновляем перерисовкой. */
+"setInterval(function(){window.SFPS=SFR;SFR=0;window.SKBPS=Math.round(SBYTES*8/1000);SBYTES=0;"
 "if(WSOK&&isScope()&&window.LASTJ&&window.LASTW)scRedraw()},1000);"
 /* WEBSOCKET: прибор сам шлёт новые кадры. Настройки уходят при изменении
    и раз в 2 с (чтобы сервер не счёл соединение простаивающим). Не
@@ -891,7 +898,7 @@ static const char PAGE[] =
 "function sloop(){var md=document.getElementById('md').value,sc=(md=='1'||md=='3'),"
 /* пауза: кадры не берём, на экране последний */
 "on=sc&&!(window.SRUN===0&&window.LASTJ);"
-"if(!on){window.SLAST=0;if(sc)window.SFPS=0}"
+"if(!on)SPEND=null;"
 "if(WSOK){var q=scq()+'&run='+(on?1:0),t=Date.now();"
 "if(q!=WSQ||t-WST>2000){try{WS.send(q);WSQ=q;WST=t}catch(e){}}"
 "setTimeout(sloop,100);return}"

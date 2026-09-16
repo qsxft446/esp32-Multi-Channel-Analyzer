@@ -498,6 +498,12 @@ pre-allocated memory.
   buffer. At start the device self-tests the codec; if that fails, frames
   go uncompressed (the page understands both). Under the plot you can see
   “stream … kbit/s” and which way it goes.
+- **The page also draws at most 20 times per second**, at any time base.
+  Large frames arrive over TCP in bursts; when each was drawn at once, the
+  browser could not keep up with 32768 points, frames piled up, and the
+  refresh rate first raced and then dropped. Now a frame that arrives
+  early waits, and the next one replaces it — the freshest is drawn.
+  “Refresh … /s” is the number of frames drawn per second.
 - If the WebSocket does not open, the page polls `/scope` as before: the
   response is binary (7 × int32 + uint16 samples), the next request right
   after drawing, at most every 50 ms. The device prepares snapshots at
