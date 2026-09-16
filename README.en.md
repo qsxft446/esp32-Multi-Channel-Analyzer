@@ -206,8 +206,12 @@ BecqMoni (answers to commands).
   changed right during acquisition to see how the spectrum changes.
 - **CPS monitor** — on the same tab, below the spectrum: current CPS, mean
   over the whole history with its error, last interval, a plot by averaging
-  intervals with a moving average (wheel — zoom, drag — pan, double click —
-  whole history), an interval table and CSV export. The history is a
+  intervals with a moving average, an interval table and CSV export. The
+  plot shows a time window — the last 30 s by default (“window” selector:
+  30 s … 6 h) — and follows new data; wheel — zoom, drag — move into the
+  past (the window then stays put), double click — back to the window and
+  now. It used to show the whole history by default and got more and more
+  compressed as the history grew. The history is a
   6-hour ring at one sample per second in the device PSRAM (~216 KB,
   `main/mca_hist.c`): it accumulates while the spectrum is acquired, even
   with the page closed; the page only fetches new samples. The CPS of an
