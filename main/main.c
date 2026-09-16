@@ -37,7 +37,10 @@ static void dsp_task(void *arg)
          * очереди и не выросли ли потери. Стоит это пары чтений
          * счётчика времени. */
         const int64_t t_wait0 = esp_timer_get_time();
-        if (!adc_cap_wait_chunk(&data, &n, 100)) continue;
+        if (!adc_cap_wait_chunk(&data, &n, 100)) {
+            mca_dsp_service(true);      /* захват стоит - запросы целиком */
+            continue;
+        }
         const int64_t t_work0 = esp_timer_get_time();
         const uint32_t q_depth = (uint32_t)adc_cap_queue_depth();
 
@@ -56,6 +59,8 @@ static void dsp_task(void *arg)
             : (mode == MCA_MODE_SCOPE_TRIG) ? DIAG_SCOPE_NORMAL
             :                                 DIAG_SCOPE_OFF;
 
+        /* запросы других задач (сброс спектра, новые L/G) - в любом режиме */
+        mca_dsp_service(false);
         if (adc_cap_take_gap()) { mca_dsp_flush(); mca_diag_flush(); }
         mca_diag_feed(data, n, sm);
 
@@ -73,7 +78,7 @@ static void dsp_task(void *arg)
                        (uint32_t)(t_end - t_work0));
         const uint64_t lost = adc_cap_chunks_lost();
         if (lost != prev_lost) {
-            mca_prof_loss((uint32_t)(lost - prev_lost), q_depth);
+            mca_prof_loss((uint32_t)(lost - prev_lost), q_depth, (uint8_t)mode);
             prev_lost = lost;
         }
 
@@ -119,7 +124,12 @@ void app_main(void)
     /* Эмуляция MCA на UART0, если включена: с этого места консоль молчит. */
     mca_emu_init();
 
-    xTaskCreatePinnedToCore(dsp_task, "dsp", 8192, NULL, 10, NULL, 1);
+    /* ПРИОРИТЕТ 19 - выше TCP/IP (18). Задача TCP/IP не привязана к ядру
+     * и, когда ядро 0 занято WiFi, шла на ядро 1 и вытесняла обработку
+     * (была 10): запас очереди захвата на 20 МГц всего 1.6 мс. Когда
+     * обработка успевает, она сама ждёт чанк, и ядро 1 свободно для
+     * остальных. Выше неё на ядре 1 только системная ipc1. */
+    xTaskCreatePinnedToCore(dsp_task, "dsp", 8192, NULL, 19, NULL, 1);
 
     ESP_LOGI(TAG, "свободно внутр. RAM: %u, PSRAM: %u",
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),

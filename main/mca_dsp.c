@@ -42,7 +42,22 @@ static const char *TAG = "mca_dsp";
 static uint32_t     *s_hist;
 static mca_params_t  s_par;
 static mca_stats_t   s_st;
-static SemaphoreHandle_t s_lock;
+/* БЛОКИРОВКА - СПИН, А НЕ МЬЮТЕКС. Под ней только копии нескольких
+ * слов. Раньше был мьютекс, и «Применить» / «Сброс» держали его, пока
+ * чистили гистограмму в PSRAM и печатали в консоль (по UART это
+ * миллисекунды), а задача обработки ждала его на каждом чанке - при
+ * запасе очереди захвата 1.6 мс на 20 МГц это верные потери. К тому же
+ * держателя мьютекса на ядре 0 вытесняет WiFi, и ожидание растягивалось. */
+static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
+#define LOCK()   portENTER_CRITICAL(&s_mux)
+#define UNLOCK() portEXIT_CRITICAL(&s_mux)
+
+/* Запросы других задач (под LOCK). Выполняет их сама задача обработки в
+ * mca_dsp_service: только она пишет в гистограмму и состояние фильтра. */
+static bool     s_req_clear, s_req_prime;
+/* Очистка гистограммы кусками: следующий канал, -1 - очистки нет. */
+static int32_t  s_clr_pos = -1;
+#define CLR_BLOCK 1024
 
 /* --- кольцо сырых отсчётов + рекурсивный аккумулятор --- */
 static int32_t  s_trap;          /* текущее значение трапеции */
@@ -76,6 +91,9 @@ static bool s_vec_ok;
  * в статистику они уходят раз на чанк (см. конец mca_dsp_process). */
 static uint32_t s_ev_pend, s_ovf_pend;   /* событий и зашкалов за чанк   */
 static uint64_t s_busy_cyc;              /* тактов обработки с замера    */
+/* Такты по этапам с замера (под LOCK): копия чанка, разность трапеции,
+ * порог и события - и сколько отсчётов на них пришлось. */
+static uint64_t s_cyc_acc[3], s_cyc_n;
 static int64_t  s_load_t_us;             /* когда был прошлый замер      */
 
 /* --- автомат детектора --- */
@@ -112,7 +130,6 @@ static uint64_t s_run_ns;
 
 void mca_dsp_init(void)
 {
-    s_lock = xSemaphoreCreateMutex();
     s_hist = heap_caps_calloc(MCA_CHANNELS, sizeof(uint32_t),
                               MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!s_hist) s_hist = calloc(MCA_CHANNELS, sizeof(uint32_t));
@@ -174,26 +191,58 @@ void mca_dsp_init(void)
     ESP_LOGI(TAG, "DSP готов: рекурсивная трапеция, порог по её выходу");
 }
 
-/* Очистить спектр и счётчики. Вызывать под s_lock. */
-static void hist_clear_locked(void)
+/* Обнулить счётчики набора. Под LOCK. Гистограмму чистит mca_dsp_service. */
+static void stats_clear_locked(void)
 {
-    memset(s_hist, 0, MCA_CHANNELS * sizeof(uint32_t));
     s_st.total_events      = 0;
     s_st.skipped_pileup    = 0;
     s_st.skipped_deadtime  = 0;
     s_st.samples_processed = 0;
+    s_st.overflow          = 0;  /* раньше не сбрасывался: «отброшенные» для
+                                    программ на ПК копились через «Сброс» */
     s_last_events = 0;
-    s_base_init   = false;      /* перезахватить ноль заново */
-    s_base_lost   = 0;
     s_run_ns      = 0;
     s_st.run_ms   = 0;          /* страница увидит ноль сразу, не через тик */
 }
 
 void mca_dsp_reset_spectrum(void)
 {
-    xSemaphoreTake(s_lock, portMAX_DELAY);
-    hist_clear_locked();
-    xSemaphoreGive(s_lock);
+    LOCK();
+    s_req_clear = true;
+    UNLOCK();
+}
+
+/* ЗАПРОСЫ ДРУГИХ ЗАДАЧ выполняет сама задача обработки: зовётся на каждом
+ * чанке (idle = false) и при простое захвата, раз в 100 мс (idle = true).
+ *
+ * Гистограмма - 32 КБ в PSRAM; целиком её очистка дольше, чем запас
+ * очереди захвата, поэтому на потоке она идёт кусками по CLR_BLOCK
+ * каналов на чанк. Пока она идёт, спектр не набирается (mca_dsp_process
+ * пропускает чанки, и время набора за них не идёт) - иначе события
+ * попадали бы в ещё не очищенные каналы. На простое - сразу целиком. */
+void mca_dsp_service(bool idle)
+{
+    LOCK();
+    const bool prime = s_req_prime, clear = s_req_clear;
+    s_req_prime = s_req_clear = false;
+    if (clear) stats_clear_locked();
+    UNLOCK();
+
+    if (prime || clear) {
+        s_trap       = 0;
+        s_state      = ST_IDLE;
+        s_need_prime = true;
+        s_base_init  = false;      /* перезахватить ноль заново */
+        s_base_lost  = 0;
+    }
+    if (clear) s_clr_pos = 0;
+    if (s_clr_pos < 0) return;
+
+    int32_t cnt = idle ? MCA_CHANNELS : CLR_BLOCK;
+    if (cnt > MCA_CHANNELS - s_clr_pos) cnt = MCA_CHANNELS - s_clr_pos;
+    memset(s_hist + s_clr_pos, 0, (size_t)cnt * sizeof(uint32_t));
+    s_clr_pos += cnt;
+    if (s_clr_pos >= MCA_CHANNELS) s_clr_pos = -1;
 }
 
 /* ПРОСТОЕ ИНТЕГРИРОВАНИЕ.
@@ -386,9 +435,16 @@ void IRAM_ATTR mca_dsp_process(const uint16_t *data, size_t n)
     /* замер загрузки: такты этого вызова копятся в s_busy_cyc */
     const uint32_t cyc0 = esp_cpu_get_cycle_count();
     mca_params_t p;
-    xSemaphoreTake(s_lock, portMAX_DELAY);
+    LOCK();
     p = s_par;
-    xSemaphoreGive(s_lock);
+    UNLOCK();
+
+    /* идёт очистка гистограммы (mca_dsp_service) - чанк не набираем,
+     * после неё фильтр начнёт с прогрева */
+    if (s_clr_pos >= 0) {
+        s_need_prime = true;
+        return;
+    }
 
     if (n > CAP_CHUNK_SAMPLES) n = CAP_CHUNK_SAMPLES;
 
@@ -471,8 +527,10 @@ void IRAM_ATTR mca_dsp_process(const uint16_t *data, size_t n)
 
     /* Разность трапеции для всего чанка сразу. Дальше и прогрев, и цикл
      * ожидания, и поиск вершины, и перезапуск берут готовое d. */
+    const uint32_t cyc1 = esp_cpu_get_cycle_count();
     if (s_vec_ok) diff_vec(L, G, (int)n);
     else          diff_scalar(L, G, (int)n);
+    const uint32_t cyc2 = esp_cpu_get_cycle_count();
 
     int32_t trap = s_trap;
     int32_t base_fp = s_base_fp;
@@ -703,7 +761,8 @@ void IRAM_ATTR mca_dsp_process(const uint16_t *data, size_t n)
     const uint32_t fclk = adc_clk_get_freq();
     const uint64_t dt_ns = fclk ? (uint64_t)n * 1000000000ULL / fclk : 0;
 
-    xSemaphoreTake(s_lock, portMAX_DELAY);
+    const uint32_t cyc3 = esp_cpu_get_cycle_count();
+    LOCK();
     s_run_ns               += dt_ns;
     s_st.skipped_pileup    += pile;
     s_st.skipped_deadtime  += dead;
@@ -711,9 +770,13 @@ void IRAM_ATTR mca_dsp_process(const uint16_t *data, size_t n)
     s_st.baseline           = base_fp >> 8;
     s_st.total_events      += s_ev_pend;
     s_st.overflow          += s_ovf_pend;
+    s_busy_cyc   += (uint32_t)(cyc3 - cyc0);
+    s_cyc_acc[0] += (uint32_t)(cyc1 - cyc0);   /* копия чанка          */
+    s_cyc_acc[1] += (uint32_t)(cyc2 - cyc1);   /* разность трапеции    */
+    s_cyc_acc[2] += (uint32_t)(cyc3 - cyc2);   /* порог и события      */
+    s_cyc_n      += n;
+    UNLOCK();
     s_ev_pend = s_ovf_pend = 0;
-    s_busy_cyc += (uint32_t)(esp_cpu_get_cycle_count() - cyc0);
-    xSemaphoreGive(s_lock);
 }
 
 void mca_dsp_tick_1s(void)
@@ -726,7 +789,7 @@ void mca_dsp_tick_1s(void)
     const int64_t dt = t_cps ? now_cps - t_cps : 1000000;
     t_cps = now_cps;
 
-    xSemaphoreTake(s_lock, portMAX_DELAY);
+    LOCK();
     const uint64_t ev = s_st.total_events - s_last_events;
     s_st.cps = (uint32_t)(dt > 0 ? (ev * 1000000ULL + (uint64_t)dt / 2) /
                                    (uint64_t)dt : ev);
@@ -743,19 +806,29 @@ void mca_dsp_tick_1s(void)
                         CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ));
     s_busy_cyc  = 0;
     s_load_t_us = now;
-    xSemaphoreGive(s_lock);
+    /* такты на отсчёт по этапам (x100) - видно, во что упирается частота */
+    for (int i = 0; i < 3; i++) {
+        s_st.cyc_x100[i] = s_cyc_n ? (uint32_t)(s_cyc_acc[i] * 100 / s_cyc_n) : 0;
+        s_cyc_acc[i] = 0;
+    }
+    s_cyc_n = 0;
+    UNLOCK();
 }
 
 void mca_dsp_get_params(mca_params_t *out)
 {
-    xSemaphoreTake(s_lock, portMAX_DELAY);
+    LOCK();
     *out = s_par;
-    xSemaphoreGive(s_lock);
+    UNLOCK();
 }
 
 void mca_dsp_set_params(const mca_params_t *in)
 {
-    xSemaphoreTake(s_lock, portMAX_DELAY);
+    /* Под блокировкой - только копия, границы и флаги запросов. Очистку
+     * гистограммы и перезапуск фильтра делает задача обработки
+     * (mca_dsp_service), печать в консоль - после блокировки. */
+    bool prime, clear;
+    LOCK();
     mca_params_t old = s_par;
     s_par = *in;
 
@@ -797,22 +870,17 @@ void mca_dsp_set_params(const mca_params_t *in)
      * окон). Сбрасываем - иначе трапеция уедет и не вернётся. */
     /* Смена полярности - то же самое: в буфере и в аккумуляторе лежит
      * сигнал старого знака, и базовую линию надо захватить заново. */
-    if (s_par.trap_L != old.trap_L || s_par.trap_G != old.trap_G ||
-        s_par.polarity != old.polarity) {
-        s_trap       = 0;
-        s_state      = ST_IDLE;
-        s_need_prime = true;
-        s_base_init  = false;
-        ESP_LOGI(TAG, "L/G или полярность изменены -> фильтр перезапущен с прогревом");
-    }
+    prime = s_par.trap_L != old.trap_L || s_par.trap_G != old.trap_G ||
+            s_par.polarity != old.polarity;
+    if (prime) s_req_prime = true;
     /* «Кодов на канал» и способ измерения меняют саму раскладку событий
      * по каналам: старый спектр с новым не складывается - очищаем.
      * Число каналов раскладку не меняет - от него зависит только показ. */
-    if (s_par.cpc_milli != old.cpc_milli || s_par.algo != old.algo) {
-        hist_clear_locked();
-        ESP_LOGI(TAG, "шкала или способ изменены -> спектр очищен");
-    }
-    xSemaphoreGive(s_lock);
+    clear = s_par.cpc_milli != old.cpc_milli || s_par.algo != old.algo;
+    if (clear) s_req_clear = true;
+    UNLOCK();
+    if (prime) ESP_LOGI(TAG, "L/G или полярность изменены -> фильтр перезапустится с прогревом");
+    if (clear) ESP_LOGI(TAG, "шкала или способ изменены -> спектр будет очищен");
 }
 
 /* Без блокировки. Страница спектра вызывает это до 16 раз на запрос,
@@ -831,21 +899,20 @@ size_t mca_dsp_get_spectrum(uint32_t *dst, size_t from, size_t count)
 
 void mca_dsp_get_stats(mca_stats_t *out)
 {
-    xSemaphoreTake(s_lock, portMAX_DELAY);
+    LOCK();
     *out = s_st;
-    xSemaphoreGive(s_lock);
+    UNLOCK();
 }
 
 void mca_dsp_flush(void)
 {
     /* Буфер больше не описывает непрерывный сигнал: между старыми
      * и новыми отсчётами дыра. Не обнуляем его (это само создало бы
-     * скачок), а помечаем, что следующий чанк начинается с прогрева. */
-    xSemaphoreTake(s_lock, portMAX_DELAY);
+     * скачок), а помечаем, что следующий чанк начинается с прогрева.
+     * Зовёт только задача обработки - блокировка не нужна. */
     s_state      = ST_IDLE;
     s_since      = 0;
     s_need_prime = true;
-    xSemaphoreGive(s_lock);
 }
 
 /* Без мьютекса: одно слово читается атомарно, а знак синхронизации

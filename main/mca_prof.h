@@ -32,7 +32,7 @@ enum {
 void mca_prof_chunk(uint32_t q_depth, uint32_t wait_us, uint32_t work_us);
 
 /* Из задачи обработки, когда счётчик потерь вырос. */
-void mca_prof_loss(uint32_t lost_delta, uint32_t q_depth);
+void mca_prof_loss(uint32_t lost_delta, uint32_t q_depth, uint8_t mode);
 
 /* Вокруг обработчиков HTTP. */
 void mca_prof_web_begin(int ep);
@@ -65,6 +65,8 @@ typedef struct {
     uint32_t web_us;      /* сколько к этому моменту длился запрос       */
     uint32_t work_us;     /* самая долгая обработка в эту секунду       */
     uint8_t  web_ep;      /* какой запрос обслуживался (PROF_EP_*)      */
+    uint8_t  mode;        /* режим прибора (mca_mode_t): спектр или
+                             осциллограф                               */
 } mca_prof_ev_t;
 
 /* Последние события, свежие первыми. Возвращает сколько записано. */

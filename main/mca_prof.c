@@ -62,7 +62,7 @@ void mca_prof_chunk(uint32_t q_depth, uint32_t wait_us, uint32_t work_us)
     UNLOCK();
 }
 
-void mca_prof_loss(uint32_t lost_delta, uint32_t q_depth)
+void mca_prof_loss(uint32_t lost_delta, uint32_t q_depth, uint8_t mode)
 {
     if (!lost_delta) return;
 
@@ -81,6 +81,7 @@ void mca_prof_loss(uint32_t lost_delta, uint32_t q_depth)
     e->web_us  = (ep != PROF_EP_NONE && t0 > 0)
                ? (uint32_t)(now - t0) : 0;
     e->work_us = s_work_max;
+    e->mode    = mode;
     s_ev_head  = (s_ev_head + 1) % PROF_EV_MAX;
     if (s_ev_cnt < PROF_EV_MAX) s_ev_cnt++;
     s_ev_total++;
@@ -279,9 +280,10 @@ void mca_prof_tick_1s(void)
 
     for (uint32_t i = np; i > 0; i--) {          /* печатаем от старых */
         const mca_prof_ev_t *e = &nev[i - 1];
-        ESP_LOGW(TAG, "ПОТЕРЯ +%lu q=%lu/%d шёл %s %.0fms work=%.2f",
+        ESP_LOGW(TAG, "ПОТЕРЯ +%lu q=%lu/%d %s, шёл %s %.0fms work=%.2f",
                  (unsigned long)e->lost, (unsigned long)e->q_depth,
                  CAP_N_CHUNKS,
+                 (e->mode == 1 || e->mode == 3) ? "осциллограф" : "спектр",
                  EP_NAME[e->web_ep < PROF_EP_CNT ? e->web_ep : 0],
                  e->web_us / 1000.0, e->work_us / 1000.0);
     }

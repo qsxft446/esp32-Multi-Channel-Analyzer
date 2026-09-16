@@ -217,8 +217,11 @@ BecqMoni (answers to commands).
   frame and does not touch spectrum acquisition. The firmware turns ADC
   capture on by itself when the open tab needs it.
 - **Diagnostics** (`/diag`) — sample stream and its real
-  rate, per-bit statistics of the data lines, last-second profile, chunk
-  loss log, data-line check.
+  rate, per-bit statistics of the data lines, last-second profile
+  (including processing busy time and CPU cycles per sample by stage —
+  copy, difference, threshold and events — against the budget of
+  240 MHz / sample rate), chunk loss log with the device mode, data-line
+  check.
 
 ![Single pulse](docs/scope-pulse.png)
 
@@ -479,7 +482,18 @@ pre-allocated memory.
 ### Other
 
 - Pinning the TCP/IP task to core 0 made things worse: the web waited
-  longer for its core. Left unpinned.
+  longer for its core. Left unpinned, but the processing task now has
+  priority 19, above TCP/IP (18): when TCP/IP moved to core 1 it
+  preempted the processing (which had 10), and at 20 MHz the capture
+  queue holds only 1.6 ms.
+- Processing statistics and parameters are under a spinlock, not a
+  mutex. “Apply” and “Reset” held the mutex while clearing the histogram
+  in PSRAM and printing to the console, and the processing task waited
+  milliseconds — guaranteed losses. Now the processing task itself clears
+  the spectrum and restarts the filter, the histogram in pieces of 1024
+  channels per chunk; during these ~0.8 ms of the stream the spectrum is
+  not acquired and the acquisition time does not run. “Reset” now also
+  zeroes the above-scale event counter, which used to accumulate.
 - The spectrum is read without locking; events are written to the histogram
   without a mutex, and the accumulated counts are flushed once per chunk.
 - GPIO matrix constants: 0x38 — constant one, 0x30 — constant zero

@@ -1622,6 +1622,9 @@ SUB_HEAD("Диагностика", "Diagnostics") SUB_NAV(N_DIAG_ON, N_WIFI, N_H
 "h+='<h4>'+L('Профиль за последнюю секунду','Profile for the last second')+'</h4><table><tr><th>'+"
 "L('Что','What')+'</th><th>'+L('Значение','Value')+'</th></tr>';"
 "h+=R(L('Чанков обработано','Chunks processed'),p.ch);"
+/* занятость задачи обработки: около 100% - очередь растёт, пойдут потери */
+"h+=R(L('Занятость обработки','Processing busy'),"
+"f((p.busy/10).toFixed(1)+' %',p.busy>900?'bad':(p.busy>700?'warn':'ok')));"
 "h+=R(L('Пик очереди чанков','Chunk queue peak'),f(p.q+L(' из 16',' of 16'),qc)+"
 "' <span style=opacity:.6>'+L('(16 - следующий теряется)','(16 - the next one is lost)')+'</span>');"
 "h+=R(L('Самая долгая обработка чанка','Longest chunk processing'),(p.work/1000).toFixed(2)+L(' мс',' ms'));"
@@ -1633,6 +1636,14 @@ SUB_HEAD("Диагностика", "Diagnostics") SUB_NAV(N_DIAG_ON, N_WIFI, N_H
 "h+=R(L('Свободно внутр. памяти','Free internal memory'),(p.heap/1024).toFixed(0)+L(' КБ (минимум ',' KB (minimum ')+"
 "(p.hmin/1024).toFixed(0)+L(' КБ)',' KB)'));"
 "h+=R(L('Сигнал WiFi','WiFi signal'),p.rssi?p.rssi+L(' дБм',' dBm'):L('нет связи с роутером','no connection to the router'));"
+/* такты процессора на отсчёт по этапам против бюджета 240 МГц / частота:
+   видно, хватает ли ядра на эту частоту и что в обработке дороже всего */
+"if(j.cyc&&j.fhz){var bud=240e6/j.fhz,cs=(j.cyc[0]+j.cyc[1]+j.cyc[2])/100;"
+"h+=R(L('Такты на отсчёт (спектр)','CPU cycles per sample (spectrum)'),cs>0?"
+"L('копия ','copy ')+(j.cyc[0]/100).toFixed(2)+L(' + разность ',' + difference ')+(j.cyc[1]/100).toFixed(2)+"
+"L(' + порог и события ',' + threshold and events ')+(j.cyc[2]/100).toFixed(2)+' = '+"
+"f(cs.toFixed(2),cs>bud*0.9?'bad':(cs>bud*0.75?'warn':'ok'))+L(' из ',' of ')+bud.toFixed(1):"
+"L('спектр сейчас не обрабатывается','the spectrum is not being processed now'))}"
 "h+='</table>';"
 /* Журнал потерь: что делал веб в момент потери чанка. Если потери
    совпадают с запросами - виноват веб, если нет - обработка. */
@@ -1640,11 +1651,12 @@ SUB_HEAD("Диагностика", "Diagnostics") SUB_NAV(N_DIAG_ON, N_WIFI, N_H
 "if(j.ev&&j.ev.length){"
 "h+='<h4>'+L('Журнал потерь чанков','Chunk loss log')+'</h4><table><tr><th>'+L('Время','Time')+'</th><th>'+"
 "L('Потеряно','Lost')+'</th><th>'+L('Очередь','Queue')+'</th><th>'+L('Шёл запрос','Request in progress')+'</th><th>'+"
-"L('Длился','Took')+'</th><th>'+L('Обработка','Processing')+'</th></tr>';"
+"L('Длился','Took')+'</th><th>'+L('Обработка','Processing')+'</th><th>'+L('Режим','Mode')+'</th></tr>';"
 "j.ev.forEach(function(e){"
 "h+='<tr><td>'+(e[0]/1000).toFixed(1)+L(' с',' s')+'</td><td>'+e[1]+'</td><td>'+e[2]+'</td>'+"
 "'<td>'+(wn2[e[3]]||'?')+'</td><td>'+(e[4]/1000).toFixed(1)+L(' мс',' ms')+'</td><td>'+"
-"(e[5]/1000).toFixed(2)+L(' мс',' ms')+'</td></tr>'});"
+"(e[5]/1000).toFixed(2)+L(' мс',' ms')+'</td><td>'+"
+"(e[6]==1||e[6]==3?L('осциллограф','scope'):L('спектр','spectrum'))+'</td></tr>'});"
 "h+='</table>'}"
 "else h+='<p style=opacity:.6>'+L('Потерь чанков не было.','No chunk losses.')+'</p>';"
 "}"
@@ -1729,11 +1741,12 @@ static esp_err_t h_diag_data(httpd_req_t *r)
     mca_prof_t pf;
     mca_prof_get(&pf);
     n += snprintf(buf + n, sizeof(buf) - n,
-        ",\"pf\":{\"ch\":%lu,\"q\":%lu,\"wait\":%lu,\"work\":%lu,"
+        ",\"pf\":{\"ch\":%lu,\"q\":%lu,\"wait\":%lu,\"work\":%lu,\"busy\":%lu,"
         "\"lost\":%lu,\"heap\":%lu,\"hmin\":%lu,\"rssi\":%ld,"
         "\"wmax\":[%lu,%lu,%lu],\"wcnt\":[%lu,%lu,%lu]}",
         (unsigned long)pf.chunks, (unsigned long)pf.q_max,
         (unsigned long)pf.wait_max_us, (unsigned long)pf.work_max_us,
+        (unsigned long)pf.busy_pm,
         (unsigned long)pf.lost_1s, (unsigned long)pf.heap_now,
         (unsigned long)pf.heap_min, (long)pf.rssi,
         (unsigned long)pf.web_max_us[PROF_EP_SPEC],
@@ -1743,16 +1756,25 @@ static esp_err_t h_diag_data(httpd_req_t *r)
         (unsigned long)pf.web_cnt[PROF_EP_SCOPE],
         (unsigned long)pf.web_cnt[PROF_EP_STAT]);
 
+    /* Такты на отсчёт по этапам обработки спектра (x100) и частота АЦП:
+     * страница сравнивает их с бюджетом 240 МГц / частота. */
+    mca_stats_t st;
+    mca_dsp_get_stats(&st);
+    n += snprintf(buf + n, sizeof(buf) - n,
+        ",\"cyc\":[%lu,%lu,%lu],\"fhz\":%lu",
+        (unsigned long)st.cyc_x100[0], (unsigned long)st.cyc_x100[1],
+        (unsigned long)st.cyc_x100[2], (unsigned long)adc_clk_get_freq());
+
     mca_prof_ev_t ev[12];
     size_t ne = mca_prof_events(ev, 12);
     n += snprintf(buf + n, sizeof(buf) - n, ",\"ev\":[");
     for (size_t i = 0; i < ne && n < (int)sizeof(buf) - 96; i++)
         n += snprintf(buf + n, sizeof(buf) - n,
-                      "%s[%lu,%lu,%lu,%u,%lu,%lu]", i ? "," : "",
+                      "%s[%lu,%lu,%lu,%u,%lu,%lu,%u]", i ? "," : "",
                       (unsigned long)ev[i].t_ms, (unsigned long)ev[i].lost,
                       (unsigned long)ev[i].q_depth, (unsigned)ev[i].web_ep,
                       (unsigned long)ev[i].web_us,
-                      (unsigned long)ev[i].work_us);
+                      (unsigned long)ev[i].work_us, (unsigned)ev[i].mode);
     n += snprintf(buf + n, sizeof(buf) - n, "]}");
 
     httpd_resp_set_type(r, "application/json");
