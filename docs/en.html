@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DIY gamma spectrometer on ESP32-S3 and AD9226 — open source multichannel analyzer (MCA)</title>
+<meta name="description" content="Open source gamma spectrometer / multichannel analyzer (MCA) on an ESP32-S3 and a 12-bit AD9226 ADC. ESP-IDF firmware, spectrum and scope in the browser.">
+<link rel="canonical" href="https://qsxft446.github.io/esp32-Multi-Channel-Analyzer/en.html">
+<link rel="alternate" hreflang="ru" href="https://qsxft446.github.io/esp32-Multi-Channel-Analyzer/">
+<link rel="alternate" hreflang="en" href="https://qsxft446.github.io/esp32-Multi-Channel-Analyzer/en.html">
+<link rel="alternate" hreflang="x-default" href="https://qsxft446.github.io/esp32-Multi-Channel-Analyzer/">
+<meta property="og:type" content="website">
+<meta property="og:title" content="DIY gamma spectrometer on ESP32-S3 and AD9226 — open source MCA">
+<meta property="og:description" content="Open ESP-IDF firmware: up to 20 MSPS ADC capture via LCD_CAM and DMA, trapezoidal filter, spectrum and oscilloscope in the browser, MCA emulation for BecqMoni.">
+<meta property="og:url" content="https://qsxft446.github.io/esp32-Multi-Channel-Analyzer/en.html">
+<meta property="og:image" content="https://qsxft446.github.io/esp32-Multi-Channel-Analyzer/spectrum.png">
+<meta name="twitter:card" content="summary_large_image">
+<style>
+:root{--bg:#0a0c0a;--panel:#11150f;--bd:#20281e;--dim:#8a9686;--txt:#cfd6cd;--accent:#34d3c0}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--txt);font-size:16px;line-height:1.65;
+font-family:ui-monospace,'SF Mono','Cascadia Mono','DejaVu Sans Mono',Consolas,monospace}
+a{color:var(--accent)}
+.wrap{max-width:880px;margin:0 auto;padding:28px 18px 56px}
+h1{font-size:26px;line-height:1.3;color:#e8efe2;margin:0 0 6px}
+h2{font-size:19px;color:#e8efe2;margin:30px 0 8px}
+p.lead{color:var(--dim);margin:0 0 18px}
+.row{display:flex;gap:10px;flex-wrap:wrap;margin:18px 0}
+.btn{display:inline-block;padding:9px 16px;border-radius:8px;border:1px solid rgba(52,211,192,.5);
+background:rgba(52,211,192,.12);color:var(--accent);text-decoration:none;font-weight:600}
+.btn.sec{border-color:#2a322a;background:#161b14;color:var(--txt);font-weight:400}
+figure{margin:18px 0}
+img{max-width:100%;height:auto;border:1px solid var(--bd);border-radius:8px;display:block}
+figcaption{color:var(--dim);font-size:13.5px;margin-top:6px}
+ul{padding-left:20px}
+li{margin:5px 0}
+table{border-collapse:collapse;width:100%;font-size:14.5px;margin:10px 0}
+th,td{border-bottom:1px solid var(--bd);padding:7px 9px;text-align:left;vertical-align:top}
+th{color:var(--accent);font-weight:600}
+code{background:var(--panel);border:1px solid var(--bd);padding:1px 5px;border-radius:4px;font-size:14px}
+footer{color:var(--dim);font-size:13.5px;border-top:1px solid var(--bd);margin-top:34px;padding-top:14px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<p style="color:var(--dim);font-size:14px;margin:0 0 14px"><a href="./" hreflang="ru">Русский</a> · English</p>
+
+<h1>DIY gamma spectrometer on ESP32-S3 and AD9226</h1>
+<p class="lead">An open source multichannel pulse-height analyzer (MCA): ESP-IDF firmware,
+built from off-the-shelf modules, spectrum and oscilloscope in the browser.</p>
+
+<div class="row">
+<a class="btn" href="https://github.com/qsxft446/esp32-Multi-Channel-Analyzer">Sources on GitHub</a>
+<a class="btn sec" href="https://github.com/qsxft446/esp32-Multi-Channel-Analyzer/blob/main/README.en.md">Documentation</a>
+</div>
+
+<figure>
+<img src="spectrum.png" width="1200" height="620"
+ alt="Gamma spectrum in the device web interface: peak with 6.88 % resolution, 4096 channels">
+<figcaption>Spectrum over 2 min 11 s: 6705 cps, 1.1 % dead time, 4096 channels, selected peak
+resolution 6.88 %.</figcaption>
+</figure>
+
+<h2>What it is</h2>
+<p>The device measures the energy of gamma quanta from a scintillation detector with a
+photomultiplier and builds a spectrum. The pulse from the preamplifier goes straight into a
+12-bit AD9226 ADC; the ESP32-S3 hardware (the LCD_CAM camera interface plus DMA) takes the
+stream and the second core processes it. No sound card is needed, and the count rate reaches
+tens of thousands of pulses per second.</p>
+
+<h2>Features</h2>
+<ul>
+<li>1–20 MSPS sampling, 12 bits, a continuous stream without gaps.</li>
+<li>Trapezoidal filter (Jordanov–Knoll algorithm) on ESP32-S3 vector instructions, pile-up
+rejection, dead time.</li>
+<li>Spectrum of 2048/4096/8192 channels, peak analysis: centroid, FWHM, resolution.</li>
+<li>Spectrum export: XML (opens in BecqMoni), CSV, N42 (ANSI N42.42), SPE (SpectraLine).</li>
+<li>Oscilloscope with edge and amplitude triggering, time base up to 32768 samples, frames
+over WebSocket with lossless compression.</li>
+<li>CPS monitor: a 6-hour history, a plot with averaging and a moving average, CSV export.</li>
+<li>MCA emulation on the serial port using the shproto protocol — PC programs such as
+BecqMoni see it as a regular analyzer.</li>
+<li>Network: WiFi or Ethernet (WIZnet W5500 module), time over SNTP.</li>
+<li>Web interface in English and Russian, no software to install.</li>
+</ul>
+
+<h2>What it is built from</h2>
+<table>
+<tr><th>Part</th><th>What it is</th></tr>
+<tr><td>ESP32-S3-N16R8</td><td>module with 16 MB flash and 8 MB PSRAM</td></tr>
+<tr><td>AD9226</td><td>ready-made 12-bit ADC board, up to 65 MSPS</td></tr>
+<tr><td>Detector</td><td>NaI(Tl) scintillator with a photomultiplier and a preamplifier</td></tr>
+<tr><td>Optional</td><td>WIZnet W5500 Ethernet module</td></tr>
+</table>
+<p>No PCB layout and no fine SMD soldering: everything is wired from off-the-shelf modules.</p>
+
+<figure>
+<img src="scope-pulse.png" width="1200" height="400"
+ alt="Oscilloscope view of a single photomultiplier pulse in the device web interface">
+<figcaption>The device oscilloscope: a single pulse 83 codes high, baseline noise 1.1 codes.</figcaption>
+</figure>
+
+<h2>Inside the firmware</h2>
+<ul>
+<li>Capture: LCD_CAM in camera mode plus GDMA, a ring of buffers in internal RAM.</li>
+<li>Core 1 processes the stream; core 0 runs WiFi, the web server and the capture interrupt.</li>
+<li>Write-ups of the causes found while debugging: CLK harmonics inside the WiFi band, the
+“ADC rate + router channel” pair, the TCP send buffer, lost chunks.</li>
+<li>Python models of the processing and tests: <code>tools/test_dsp.py</code>.</li>
+</ul>
+
+<h2>Links</h2>
+<ul>
+<li><a href="https://github.com/qsxft446/esp32-Multi-Channel-Analyzer">Repository, wiring and build instructions</a></li>
+<li><a href="./">Описание по-русски</a></li>
+</ul>
+
+<footer>Open source project. ESP-IDF 5.4.4 firmware for the ESP32-S3.
+Keywords: gamma spectrometer, multichannel analyzer, MCA, ESP32, AD9226, scintillation
+detector, pulse height analysis, BecqMoni.</footer>
+</div>
+</body>
+</html>

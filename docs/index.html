@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Гамма-спектрометр на ESP32-S3 и AD9226 — многоканальный анализатор (MCA) своими руками</title>
+<meta name="description" content="Открытый проект: гамма-спектрометр (многоканальный анализатор, MCA) на ESP32-S3 и АЦП AD9226. Прошивка ESP-IDF, спектр и осциллограф в браузере.">
+<link rel="canonical" href="https://qsxft446.github.io/esp32-Multi-Channel-Analyzer/">
+<link rel="alternate" hreflang="ru" href="https://qsxft446.github.io/esp32-Multi-Channel-Analyzer/">
+<link rel="alternate" hreflang="en" href="https://qsxft446.github.io/esp32-Multi-Channel-Analyzer/en.html">
+<link rel="alternate" hreflang="x-default" href="https://qsxft446.github.io/esp32-Multi-Channel-Analyzer/">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Гамма-спектрометр на ESP32-S3 и AD9226 — многоканальный анализатор своими руками">
+<meta property="og:description" content="Открытая прошивка ESP-IDF: захват АЦП до 20 МГц через LCD_CAM и DMA, трапецеидальный фильтр, спектр и осциллограф в браузере, эмуляция MCA для BecqMoni.">
+<meta property="og:url" content="https://qsxft446.github.io/esp32-Multi-Channel-Analyzer/">
+<meta property="og:image" content="https://qsxft446.github.io/esp32-Multi-Channel-Analyzer/spectrum.png">
+<meta name="twitter:card" content="summary_large_image">
+<style>
+:root{--bg:#0a0c0a;--panel:#11150f;--bd:#20281e;--dim:#8a9686;--txt:#cfd6cd;--accent:#34d3c0}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--txt);font-size:16px;line-height:1.65;
+font-family:ui-monospace,'SF Mono','Cascadia Mono','DejaVu Sans Mono',Consolas,monospace}
+a{color:var(--accent)}
+.wrap{max-width:880px;margin:0 auto;padding:28px 18px 56px}
+h1{font-size:26px;line-height:1.3;color:#e8efe2;margin:0 0 6px}
+h2{font-size:19px;color:#e8efe2;margin:30px 0 8px}
+p.lead{color:var(--dim);margin:0 0 18px}
+.row{display:flex;gap:10px;flex-wrap:wrap;margin:18px 0}
+.btn{display:inline-block;padding:9px 16px;border-radius:8px;border:1px solid rgba(52,211,192,.5);
+background:rgba(52,211,192,.12);color:var(--accent);text-decoration:none;font-weight:600}
+.btn.sec{border-color:#2a322a;background:#161b14;color:var(--txt);font-weight:400}
+figure{margin:18px 0}
+img{max-width:100%;height:auto;border:1px solid var(--bd);border-radius:8px;display:block}
+figcaption{color:var(--dim);font-size:13.5px;margin-top:6px}
+ul{padding-left:20px}
+li{margin:5px 0}
+table{border-collapse:collapse;width:100%;font-size:14.5px;margin:10px 0}
+th,td{border-bottom:1px solid var(--bd);padding:7px 9px;text-align:left;vertical-align:top}
+th{color:var(--accent);font-weight:600}
+code{background:var(--panel);border:1px solid var(--bd);padding:1px 5px;border-radius:4px;font-size:14px}
+footer{color:var(--dim);font-size:13.5px;border-top:1px solid var(--bd);margin-top:34px;padding-top:14px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<p style="color:var(--dim);font-size:14px;margin:0 0 14px">Русский · <a href="en.html" hreflang="en">English</a></p>
+
+<h1>Гамма-спектрометр на ESP32-S3 и AD9226</h1>
+<p class="lead">Многоканальный анализатор импульсов (MCA) своими руками: открытая прошивка
+ESP-IDF, сборка из готовых модулей, спектр и осциллограф в браузере.</p>
+
+<div class="row">
+<a class="btn" href="https://github.com/qsxft446/esp32-Multi-Channel-Analyzer">Исходники на GitHub</a>
+<a class="btn sec" href="https://github.com/qsxft446/esp32-Multi-Channel-Analyzer#readme">Документация</a>
+</div>
+
+<figure>
+<img src="spectrum.png" width="1200" height="620"
+ alt="Спектр гамма-излучения в веб-интерфейсе прибора: пик, разрешение 6.88 %, 4096 каналов">
+<figcaption>Спектр за 2 мин 11 с: 6705 имп/с, мёртвое время 1.1 %, 4096 каналов,
+разрешение выделенного пика 6.88 %.</figcaption>
+</figure>
+
+<h2>Что это</h2>
+<p>Прибор измеряет энергию гамма-квантов со сцинтилляционного детектора с ФЭУ и строит
+спектр. Импульс с усилителя идёт прямо на 12-битный АЦП AD9226, поток забирает
+аппаратура ESP32-S3 (камерный интерфейс LCD_CAM и DMA), а обработку ведёт второе ядро.
+Звуковая карта для оцифровки не нужна: счёт до десятков тысяч импульсов в секунду.</p>
+
+<h2>Возможности</h2>
+<ul>
+<li>Оцифровка 1–20 МГц, 12 бит, непрерывный поток без пропусков.</li>
+<li>Трапецеидальный фильтр (алгоритм Джорданова–Нолла) на векторных командах ESP32-S3,
+отбраковка наложений, мёртвое время.</li>
+<li>Спектр 2048/4096/8192 канала, анализ пика: центр, ширина на полувысоте, разрешение.</li>
+<li>Выгрузка спектра: XML (открывается в BecqMoni), CSV, N42 (ANSI N42.42), SPE (SpectraLine).</li>
+<li>Осциллограф с синхронизацией по фронту и по амплитуде, развёртка до 32768 отсчётов,
+кадры по WebSocket со сжатием без потерь.</li>
+<li>Мониторинг CPS: история 6 часов, график с усреднением и скользящим средним, выгрузка CSV.</li>
+<li>Эмуляция MCA на COM-порту по протоколу shproto — прибор виден программам вроде BecqMoni.</li>
+<li>Сеть: WiFi или Ethernet (модуль WIZnet W5500), время по SNTP.</li>
+<li>Веб-интерфейс на русском и английском, без установки программ.</li>
+</ul>
+
+<h2>Из чего собрано</h2>
+<table>
+<tr><th>Часть</th><th>Что это</th></tr>
+<tr><td>ESP32-S3-N16R8</td><td>модуль с 16 МБ флеш и 8 МБ PSRAM</td></tr>
+<tr><td>AD9226</td><td>готовая плата 12-битного АЦП до 65 МГц</td></tr>
+<tr><td>Детектор</td><td>сцинтиллятор NaI(Tl) с ФЭУ и усилителем</td></tr>
+<tr><td>Необязательно</td><td>модуль Ethernet WIZnet W5500</td></tr>
+</table>
+<p>Плата не разводится и мелкие SMD-детали паять не нужно: всё собирается проводами из
+готовых модулей.</p>
+
+<figure>
+<img src="scope-pulse.png" width="1200" height="400"
+ alt="Осциллограмма одиночного импульса с фотоэлектронного умножителя в веб-интерфейсе">
+<figcaption>Осциллограф прибора: одиночный импульс высотой 83 кода, шум базы 1.1 кода.</figcaption>
+</figure>
+
+<h2>Что внутри прошивки</h2>
+<ul>
+<li>Захват: LCD_CAM в камерном режиме плюс GDMA, кольцо буферов во внутренней памяти.</li>
+<li>Ядро 1 — обработка потока, ядро 0 — WiFi, веб-сервер и прерывание захвата.</li>
+<li>Разбор найденных при отладке причин: помехи от гармоник CLK в полосе WiFi, выбор
+пары «частота АЦП + канал роутера», буфер отправки TCP, потери чанков.</li>
+<li>Модели обработки на Python и тесты: <code>tools/test_dsp.py</code>.</li>
+</ul>
+
+<h2>Ссылки</h2>
+<ul>
+<li><a href="https://github.com/qsxft446/esp32-Multi-Channel-Analyzer">Репозиторий, схема подключения и сборка</a></li>
+<li><a href="https://github.com/qsxft446/esp32-Multi-Channel-Analyzer/blob/main/README.en.md">Documentation in English</a></li>
+</ul>
+
+<footer>Открытый проект. Прошивка ESP-IDF 5.4.4 для ESP32-S3.
+Ключевые слова: гамма-спектрометр, многоканальный анализатор, MCA, ESP32, AD9226,
+сцинтилляционный детектор, спектрометрия, BecqMoni.</footer>
+</div>
+</body>
+</html>

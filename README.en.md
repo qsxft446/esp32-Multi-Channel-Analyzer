@@ -1,6 +1,7 @@
 # MCA on ESP32-S3 + AD9226
 
-[🇷🇺 Русский](README.md) · **🇬🇧 English**
+[🇷🇺 Русский](README.md) · **🇬🇧 English** ·
+[project site](https://qsxft446.github.io/esp32-Multi-Channel-Analyzer/en.html)
 
 A multichannel pulse-height analyzer (gamma spectrometer) built on an
 ESP32-S3-N16R8 and a 12-bit AD9226 ADC board. The ADC stream is captured by

@@ -1,6 +1,10 @@
 # MCA на ESP32-S3 + AD9226
 
-**🇷🇺 Русский** · [🇬🇧 English](README.en.md)
+**🇷🇺 Русский** · [🇬🇧 English](README.en.md) ·
+[сайт проекта](https://qsxft446.github.io/esp32-Multi-Channel-Analyzer/)
+
+*Open source DIY gamma spectrometer / multichannel analyzer (MCA) on ESP32-S3
+and a 12-bit AD9226 ADC — [documentation in English](README.en.md).*
 
 Многоканальный анализатор импульсов (гамма-спектрометр) на ESP32-S3-N16R8
 и 12-битной плате АЦП AD9226. Поток АЦП забирает аппаратура (LCD_CAM +

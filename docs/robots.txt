@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://qsxft446.github.io/esp32-Multi-Channel-Analyzer/sitemap.xml
