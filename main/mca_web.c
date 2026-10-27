@@ -1184,8 +1184,8 @@ static const char PAGE[] =
 "}"
 "if(j.stats){"
 "h+='<table><tr><th>'+L('Бит','Bit')+'</th><th>'+L('Переключений','Toggles')+'</th><th>'+L('Состояние','State')+'</th></tr>';"
-"var nm=['D0','D1','D2','D3','D4','D5','D6','D7','D8','D9','D10','D11','OTR'];"
-"for(var b=0;b<13;b++){var st='',c='ok';"
+"var nm=['D0','D1','D2','D3','D4','D5','D6','D7','D8','D9','D10','D11'];"
+"for(var b=0;b<12;b++){var st='',c='ok';"
 "if(j.a1&(1<<b)){st=L('всегда 1','always 1');c='bad'}"
 "else if(j.a0&(1<<b)){st=L('всегда 0','always 0');c='bad'}"
 "else st=L('меняется','toggling');"
@@ -1195,7 +1195,11 @@ static const char PAGE[] =
 "h+=dR('min / max',j.vmin+' / '+j.vmax);"
 "h+=dR(L('среднее','mean'),j.vmean);"
 "h+=dR(L('размах','range'),j.vmax-j.vmin);"
-"h+=dR(L('OTR (переполнение)','OTR (overflow)'),j.otr>0?df(j.otr,'warn'):j.otr);"
+/* Линии 12-15 камерного интерфейса прибиты к постоянному нулю: единицы
+   там значат, что ноль не ноль (так было с неверной константой матрицы) */
+"h+=dR(L('старшие биты 12-15 (должны быть 0)','high bits 12-15 (must be 0)'),"
+"j.hib>0?df(j.hib+L(' отсчётов - константа нуля не работает, обработка будет врать',"
+"' samples - the zero constant does not work, processing will be wrong'),'bad'):df('0','ok'));"
 "h+=dR(L('проанализировано','analysed'),j.an+L(' отсчётов',' samples'));"
 "h+='</table>'}"
 "else h+='<p style=opacity:.6>'+L('Побитовая статистика выключена.','Per-bit statistics are off.')+'</p>';"
@@ -2169,9 +2173,9 @@ static esp_err_t h_diag_data(httpd_req_t *r)
     if (d.stats_valid) {
         n += snprintf(buf + n, sizeof(buf) - n,
             ",\"a1\":%u,\"a0\":%u,\"vmin\":%u,\"vmax\":%u,\"vmean\":%lu,"
-            "\"otr\":%lu,\"an\":%lu,\"tg\":[",
+            "\"hib\":%lu,\"an\":%lu,\"tg\":[",
             d.bit_always_1, d.bit_always_0, d.vmin, d.vmax,
-            (unsigned long)d.vmean, (unsigned long)d.otr_count,
+            (unsigned long)d.vmean, (unsigned long)d.hibits_count,
             (unsigned long)d.analyzed_samples);
         for (int b = 0; b < DIAG_NBITS; b++)
             n += snprintf(buf + n, sizeof(buf) - n, "%s%lu",

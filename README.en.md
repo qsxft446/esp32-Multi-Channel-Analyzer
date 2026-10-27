@@ -550,9 +550,20 @@ pre-allocated memory.
   zeroes the above-scale event counter, which used to accumulate.
 - The spectrum is read without locking; events are written to the histogram
   without a mutex, and the accumulated counts are flushed once per chunk.
-- GPIO matrix constants: 0x38 — constant one, 0x30 — constant zero
-  (confirmed by the espScope project code). Unused CAM data lines are tied
-  to zero so they do not pick up noise.
+- **GPIO matrix constant levels come from ESP-IDF, not as numbers.** On
+  the ESP32-S3 the constant one is `0x38` and the constant zero is `0x3C`
+  (`soc/esp32s3/include/soc/gpio_pins.h`). The firmware used to have
+  `0x30` — the zero of the classic ESP32, but on the S3 it is the
+  ordinary pin GPIO48. The “constant zero” on the frame sync input and
+  the spare data lines actually read GPIO48. On the author's board it
+  idles low, so everything worked by chance; on boards with an LED on
+  GPIO48 (ESP32-S3 Super Mini, Arduino Nano ESP32) the camera never saw
+  a frame start, and not a single chunk arrived although the clock was
+  running. Found when the project was being repeated. The values now come
+  from ESP-IDF, and the build checks that the constant does not match a
+  real pin number. Unused CAM data lines are tied to zero so they do not
+  pick up noise; if the zero is not a zero, diagnostics shows it (the
+  “high bits 12–15” line).
 - Rates “per second” (sample rate, CPS, chunks) are computed over the
   actually elapsed time: the one-second tick comes from the lowest-priority
   main loop, and under core 0 load (for example, spectrum upload over COM)
@@ -588,6 +599,23 @@ prof: cpu0 5% cpu1 86% | dsp(1) 85.4% httpd(0) 2.2% wifi(0) 0.9% main(0) 0.9% ti
 For each loss there is a line `ПОТЕРЯ +n q=… шёл /ep Xms work=…` (LOSS):
 which request was being served at that moment and for how long.
 
+## Other ESP32-S3 boards
+
+The firmware is built for the ESP32-S3-N16R8 (DevKitC) but also starts
+on other ESP32-S3 boards:
+
+- **Flash.** The firmware header says 4 MB: if it says more than the
+  board has, ESP-IDF stops the start (`ESP_ERR_FLASH_SIZE_NOT_MATCH`).
+  On 16 MB there is only a warning at start.
+- **PSRAM.** Without it, or with another type (Quad, as on N4R2), the
+  device does not crash but works without it: no 6-hour CPS history and
+  no 16384 and 32768 oscilloscope time bases. To get everything, set your
+  PSRAM type in `idf.py menuconfig` (Component config → ESP PSRAM).
+- **Pins.** GPIO4–18 (data and CLK) must be free, plus GPIO39–42 and 21
+  for the W5500. Avoid GPIO0, 3, 45, 46 (boot), 19–20 (USB), 26–37 (flash
+  and PSRAM on modules with Octal PSRAM). If your board has other free
+  pins, change them in `main/mca_config.h`.
+
 ## Bring-up on new hardware
 
 1. Frequency 1–2 MHz, “Oscilloscope” tab, “Auto” mode,
@@ -598,7 +626,9 @@ which request was being served at that moment and for how long.
    fields in `main/adc_cap.c`. On this board the working mode is all
    polarities non-inverted, frame sync tied to constant zero; it was found
    by trying all 48 variants (variant 16), after which the search was
-   removed from the firmware.
+   removed from the firmware. With the “diagnostics” checkbox, the “high
+   bits 12–15” line must be 0, and “Check data lines” must show D0–D11
+   toggling.
 2. Signal from the PMT: a flat baseline between pulses, headroom on the
    ADC scale.
 3. Raise the frequency step by step, checking the oscilloscope and `lost`

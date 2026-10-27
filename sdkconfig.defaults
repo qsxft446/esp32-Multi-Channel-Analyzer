@@ -1,12 +1,20 @@
 # --- ESP32-S3 N16R8 ---
 CONFIG_IDF_TARGET="esp32s3"
-CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+# Флеш в заголовке - 4 МБ, хотя у N16R8 их 16: прошивке (~1 МБ) хватает,
+# а заголовок больше настоящего флеша не даёт плате стартовать
+# (ESP_ERR_FLASH_SIZE_NOT_MATCH) - на платах с 4/8 МБ прибор не запустился бы.
+# На 16 МБ лишь предупреждение при старте.
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
 CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
 CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
 
 # Octal PSRAM (R8). Занимает GPIO26-37 - наши 4..18 свободны.
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_OCT=y
+# Нет PSRAM или она другого типа (Quad на N4R2 и т.п.) - не падать при
+# старте, а работать без неё: без истории CPS и длинных развёрток
+# осциллографа (см. README, «Другие платы»).
+CONFIG_SPIRAM_IGNORE_NOTFOUND=y
 CONFIG_SPIRAM_SPEED_80M=y
 CONFIG_SPIRAM_USE_MALLOC=y
 

@@ -521,15 +521,17 @@ void mca_diag_feed(const uint16_t *data, size_t n, diag_scope_mode_t sm)
     s_next_analyze_us = now + 1000000;
 
     uint32_t toggles[DIAG_NBITS] = { 0 };
-    uint16_t and_acc = 0x1FFF, or_acc = 0;
+    uint16_t and_acc = MCA_DATA_MASK, or_acc = 0;
     uint16_t vmin = 0xFFFF, vmax = 0;
     uint64_t sum = 0;
-    uint32_t otr = 0;
+    uint32_t hib = 0;
 
-    uint16_t prev = data[0] & 0x1FFF;
+    uint16_t prev = data[0] & MCA_DATA_MASK;
     for (size_t i = 0; i < n; i++) {
-        uint16_t raw = data[i] & 0x1FFF;
-        uint16_t val = raw & MCA_DATA_MASK;
+        /* обработка берёт слово без маски - единицы сверху её бы сломали */
+        if (data[i] & ~MCA_DATA_MASK) hib++;
+        uint16_t raw = data[i] & MCA_DATA_MASK;
+        uint16_t val = raw;
 
         uint16_t diff = raw ^ prev;
         if (diff) {
@@ -543,17 +545,16 @@ void mca_diag_feed(const uint16_t *data, size_t n, diag_scope_mode_t sm)
         if (val < vmin) vmin = val;
         if (val > vmax) vmax = val;
         sum += val;
-        if (raw & MCA_OTR_MASK) otr++;
     }
 
     LOCK();
     memcpy(s_d.bit_toggles, toggles, sizeof(toggles));
     s_d.bit_always_1     = and_acc;
-    s_d.bit_always_0     = (uint16_t)(~or_acc) & 0x1FFF;
+    s_d.bit_always_0     = (uint16_t)(~or_acc) & MCA_DATA_MASK;
     s_d.vmin             = vmin;
     s_d.vmax             = vmax;
     s_d.vmean            = (uint32_t)(sum / (n ? n : 1));
-    s_d.otr_count        = otr;
+    s_d.hibits_count     = hib;
     s_d.analyzed_samples = n;
     s_d.stats_valid      = true;
     UNLOCK();

@@ -55,7 +55,6 @@
 
 #define MCA_ADC_BITS      12
 #define MCA_ADC_MAX       4095
-#define MCA_OTR_MASK      (1u << 12)
 #define MCA_DATA_MASK     0x0FFFu
 
 /* ================= ЗАХВАТ =================
